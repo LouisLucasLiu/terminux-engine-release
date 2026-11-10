@@ -1,0 +1,10 @@
+# 發行範本；不含憑證或開發者本機模型路徑。
+# EAP Work 的 provider binding 由 Profile／policy 另行選用。
+# 若要啟用舊 Layer 2 通知，先複製到使用者設定並填入有效的本機服務。
+provider: ollama
+model: configure-me
+ollama_base_url: http://127.0.0.1:11434
+max_tokens: 1024
+timeout_seconds: 30
+retry_on_parse_failure: true
+max_concurrent: 1

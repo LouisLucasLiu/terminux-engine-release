@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terminux-engine"
+dynamic = ["version"]
+description = "Terminux Engine: EDA terminal companion daemon with artifact lineage, DQE evidence review and LLM-assisted run analysis"
+authors = [{ name = "Liu, Hsien-Ming (Louis Liu)", email = "louis.cat.work@gmail.com" }]
+license = "LicenseRef-PolyForm-Shield-1.0.0"
+license-files = ["LICENSE.md"]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2",
+    "pyyaml",
+    "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+gemini = ["google-genai>=1.0"]
+anthropic = ["anthropic"]
+local-llm = ["llama-cpp-python"]
+rag = ["llama-index-core"]
+
+[project.scripts]
+terminux-daemon = "terminux_engine.main:main"
+terminux-relay = "terminux_engine.ipc.relay:main"
+terminux-launch = "terminux_engine.launcher:main"
+terminux-work = "terminux_engine.expert_ai.work_cli:main"
+terminux-doctor = "terminux_engine.release.doctor:main"
+terminux-qt-check = "terminux_engine.release.qt_check:main"
+terminux-cold-backup = "terminux_engine.release.cold_backup:main"
+terminux-rollback-check = "terminux_engine.release.rollback_guard:main"
+dqe-scheduled-clean = "terminux_engine.dqe.maintenance:main"
+terminux-package-validate = "terminux_engine.package_runtime.validator:main"
+terminux-package-new = "terminux_engine.package_runtime.scaffold:main"
+terminux-package-test = "terminux_engine.package_runtime.test_harness:main"
+terminux-package-doctor = "terminux_engine.package_runtime.doctor:main"
+terminux-package-install = "terminux_engine.package_runtime.user_package_cli:install_main"
+terminux-package-uninstall = "terminux_engine.package_runtime.user_package_cli:uninstall_main"
+terminux-package-status = "terminux_engine.package_runtime.user_package_cli:status_main"
+terminux-tool = "terminux_engine.tool_identity.user_tool_cli:main"
+terminux-orfs-run = "terminux_engine.orchestration.orfs_cli:main"
+terminux-orfs-report = "terminux_engine.orchestration.report_cli:main"
+terminux-corpus-replay = "terminux_engine.packages.orfs_run_intelligence.qualification.corpus_replay_cli:cli"
+
+[tool.setuptools.dynamic]
+version = {attr = "terminux_engine._version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+terminux_engine = ["**/*"]
+
+[tool.setuptools.exclude-package-data]
+terminux_engine = [
+    "**/__pycache__/*",
+    "**/*.pyc",
+    "**/*.bak",
+    "packages/*/package-tests/*",
+]

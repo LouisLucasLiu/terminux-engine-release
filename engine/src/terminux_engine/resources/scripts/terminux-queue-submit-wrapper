@@ -1,0 +1,60 @@
+#!/bin/bash
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+# Terminux queue submit wrapper。
+# 安裝為 ~/.terminux/bin/_queue_submit_wrapper；sbatch/bsub/qsub 是指向本檔的 symlink。
+# 生 TRACE_QUEUE、inject 進 job env、寫 event=queue_submit JSONL，最後 exec 真 submit。
+set -euo pipefail
+
+source "$(dirname "$0")/_wrapper_lib.sh"
+
+submit_cmd="$(basename "$0")"
+
+# 防止直接呼叫
+if [[ "$submit_cmd" == "_queue_submit_wrapper" ]]; then
+    echo "_queue_submit_wrapper: must be invoked via symlink (e.g. sbatch -> _queue_submit_wrapper)" >&2
+    exit 2
+fi
+
+# 找真正的 submit command（用 device:inode 比對跳過自己）
+real_cmd="$(terminux_find_real_tool "$submit_cmd")" || {
+    echo "$submit_cmd: command not found" >&2
+    exit 127
+}
+
+# 不在 Terminux 環境 → 透明 fall-through，不寫 JSONL、不改 argv
+if [[ -z "${TERMINUX_TRACE_ROOT:-}" ]]; then
+    exec "$real_cmd" "$@"
+fi
+
+# ── Terminux 環境 ──
+
+_terminux_advance_trace_chain
+export TERMINUX_TRACE_QUEUE="submit_$(head -c 16 /dev/urandom | xxd -p)"
+
+# Default：argv 不變；queue-specific injector 視情況覆寫
+_TERMINUX_MODIFIED_ARGV=("$@")
+_queue_system=""
+
+# Slurm --export 注入：邏輯已抽到 _wrapper_lib.sh::_terminux_inject_slurm_env
+
+# SGE：沒有 -V 就 prepend -V（讓所有 env 進 job）
+_inject_sge_env() {
+    local arg
+    for arg in "$@"; do
+        [[ "$arg" == "-V" ]] && return 0  # 已有 -V，不改
+    done
+    _TERMINUX_MODIFIED_ARGV=("-V" "$@")
+}
+
+case "$submit_cmd" in
+    sbatch) _queue_system="slurm"; _terminux_inject_slurm_env "$@" ;;
+    bsub)   _queue_system="lsf" ;;   # MVP：依賴 bsub 預設傳所有 env
+    qsub)   _queue_system="sge"; _inject_sge_env "$@" ;;
+    *)      _queue_system="unknown" ;;
+esac
+
+# event=queue_submit JSONL helper 已抽到 _wrapper_lib.sh::_terminux_log_queue_event
+
+_terminux_log_queue_event "$submit_cmd" "$_queue_system" "$@"
+exec "$real_cmd" "${_TERMINUX_MODIFIED_ARGV[@]}"

@@ -1,0 +1,14 @@
+# Terminux queue submit command list
+# 一行一個 command name。# 開頭是註解、空行忽略。
+# 這份清單與 wrapped_tools.txt 分開，因為 queue submit wrapper（_queue_submit_wrapper）
+# 與 EDA tool wrapper（_terminux_wrapper）責任不同：前者要 inject TRACE env 進
+# job、生 TRACE_QUEUE，後者只是 fork + exec 寫 lineage event。
+
+# Slurm
+sbatch
+
+# LSF
+bsub
+
+# SGE / OGE
+qsub

@@ -1,0 +1,207 @@
+package:
+  id: orfs_run_intelligence
+  version: 0.1.0
+  api: terminux.package.v1
+
+schema: 1
+
+when:
+  tools:
+    - orfs
+
+actions:
+  orfs_run_intelligence.explain_run:
+    handler: actions.explain_run
+    # outer execution timeout。推導＝最大 2 次 LLM 呼叫
+    # × LLM_TIMEOUT_SECONDS 120s ＋ bounded overhead。
+    # initial ＋ 最多一次 bounded repair = 2 × LLM_TIMEOUT_SECONDS(120) ＋ 60s overhead（context 組裝、DQE 讀取、artifact hash、驗證、record commit）
+    timeout_sec: 300
+    description: >-
+      Use when the user asks why an ORFS run failed DQE or signoff, what the
+      main problem is, or what to check next. Resolves a specified or latest
+      verified ORFS run, reads its already-recorded DQE results and
+      hash-verified report artifacts, and returns an evidence-backed
+      explanation with separated facts, interpretations, hypotheses, unknowns
+      and recommended checks. Read-only analysis: it reads verified artifacts,
+      makes one LLM call and writes two analysis records; it never runs any
+      EDA tool, shell command, or design modification.
+    parameters:
+      question:
+        type: string
+        description: The user's engineering question about the run.
+        required: true
+      run_id:
+        type: string
+        description: >-
+          Optional exact orchestration run id (format run_<32 hex>). Omit to
+          analyse the latest verified ORFS DQE run.
+        required: false
+
+  orfs_run_intelligence.prepare_variant:
+    handler: flow_actions.prepare_variant
+    # 候選 input snapshot 的複製與唯一 diff。不執行 Make/EDA。
+    timeout_sec: 600
+    description: >-
+      Internal step of an approved parameter-comparison flow task. Creates the
+      candidate input snapshot by copying the fixed baseline snapshot and
+      applying exactly one approved single-token change to the design config,
+      then verifies the resulting tree hash against the value bound into the
+      task digest. It never runs any EDA tool, Make target, or shell command,
+      and it is only reachable from an approved flow task step with a live host
+      binding.
+    parameters:
+      task_id:
+        type: string
+        description: The flow task this step belongs to.
+        required: true
+      slot:
+        type: string
+        description: >-
+          Which bound candidate slot to materialise (candidate, candidate_1 or
+          candidate_2). Optional; it defaults to candidate for the two-run
+          template. It never widens what the task may do: the slot must match
+          the live host binding for this step.
+        required: false
+
+  orfs_run_intelligence.prepare_timing_repair:
+    handler: flow_actions.prepare_timing_repair
+    # 只複製已核准的固定 helper／config bytes。不執行任何 EDA 工具。
+    timeout_sec: 600
+    description: >-
+      Internal step of an approved setup-timing-repair flow task. Creates the
+      candidate input snapshot by copying the fixed baseline snapshot and
+      writing exactly the approved, hash-pinned ECO hook settings, then
+      verifies the resulting tree hash against the value bound into the task
+      digest. It never runs any EDA tool, Make target, shell command, or
+      caller-supplied Tcl, and it is only reachable from an approved flow task
+      step with a live host binding.
+    parameters:
+      task_id:
+        type: string
+        description: The flow task this step belongs to.
+        required: true
+      slot:
+        type: string
+        description: >-
+          Always "candidate". The slot must match the live host binding; it
+          grants nothing on its own.
+        required: true
+
+  orfs_run_intelligence.run_flow:
+    handler: flow_actions.run_flow
+    # 只等啟動交接；長時間 EDA 由 Kernel 的 run timeout 管理。
+    timeout_sec: 30
+    description: >-
+      Internal step of an approved parameter-comparison flow task. Asks the
+      Kernel to start one complete ORFS flow for the bound slot using the fixed
+      input snapshot and pinned image, and returns immediately with the run
+      reference. Accepting the launch does not mean the flow finished. It is
+      only reachable from an approved flow task step with a live host binding.
+    parameters:
+      task_id:
+        type: string
+        description: The flow task this step belongs to.
+        required: true
+      slot:
+        type: string
+        description: >-
+          Which bound slot to run (baseline, candidate, candidate_1 or
+          candidate_2). The slot must match the live host binding for this
+          step; the enum does not grant any task an extra run.
+        required: true
+
+  orfs_run_intelligence.compare_runs:
+    handler: compare_actions.compare_runs
+    # outer execution timeout。推導＝最大 1 次 LLM 呼叫
+    # × LLM_TIMEOUT_SECONDS 120s ＋ bounded overhead。
+    # 單次呼叫、無 repair = 1 × 120 ＋ 60s overhead（雙 run 的 context 與 artifact 驗證）
+    timeout_sec: 180
+    description: >-
+      Use when the user asks how one ORFS run compares with another - what
+      improved or degraded between a baseline and a candidate run, whether the
+      two runs are really comparable, or what evidence is still missing before a
+      cause can be claimed. Resolves both runs, reads their already-recorded DQE
+      results and hash-verified report artifacts, decides comparability with a
+      versioned ORFS policy, and returns deterministic per-metric deltas plus an
+      evidence-backed explanation with separated facts, interpretations,
+      hypotheses, unknowns and recommended checks. Read-only analysis: it reads
+      verified artifacts, makes one LLM call and writes two analysis records; it
+      never runs any EDA tool, shell command, or design modification.
+    parameters:
+      baseline_run_id:
+        type: string
+        description: Exact orchestration run id of the baseline run (format run_<32 hex>).
+        required: true
+      candidate_run_id:
+        type: string
+        description: >-
+          Exact orchestration run id of the candidate run (format run_<32 hex>).
+          Must differ from baseline_run_id.
+        required: true
+      question:
+        type: string
+        description: The user's engineering question about the comparison.
+        required: false
+      controlled_changes:
+        type: array
+        description: >-
+          Dimensions the caller declares as deliberate, controlled differences
+          (for example design_config). Declaring one changes how it is labelled,
+          not whether it is reported, and never makes it a root cause.
+        required: false
+      comparison_policy_id:
+        type: string
+        description: >-
+          Fixed, server-approved comparison policy identity. Only a recognised
+          policy widens which dimensions may be labelled as controlled; an
+          unknown value falls back to the default set, so this cannot be used
+          to have an arbitrary difference accepted.
+        required: false
+
+  orfs_run_intelligence.assess_situation:
+    handler: situation_actions.assess_situation
+    # outer execution timeout。推導＝最大 2 次 LLM 呼叫
+    # × LLM_TIMEOUT_SECONDS 120s ＋ bounded overhead。
+    # initial ＋ 最多一次 bounded repair = 2 × 120 ＋ 60s overhead
+    timeout_sec: 300
+    description: >-
+      Use when the user asks where a design currently stands across two
+      already-completed ORFS runs - what improved, what is still blocking,
+      whether it can be treated as ready, which explanations are only
+      hypotheses, what evidence is missing, and what to check next. Reads the
+      already-recorded DQE results and hash-verified report artifacts of both
+      runs, decides comparability and a non-authoritative readiness status from
+      recorded results, and returns an evidence-backed situation snapshot that
+      separates facts, interpretations, hypotheses and unknowns. Read-only
+      analysis: it reads verified artifacts, makes one LLM call and writes one
+      append-only situation record; it never runs any EDA tool, shell command,
+      or design modification, and its readiness output is NOT a formal signoff
+      decision.
+    parameters:
+      current_run_id:
+        type: string
+        description: Exact orchestration run id of the run being assessed (format run_<32 hex>).
+        required: true
+      baseline_run_id:
+        type: string
+        description: >-
+          Exact orchestration run id of the run to compare against (format run_<32 hex>). Must differ
+          from current_run_id. The baseline is never guessed.
+        required: true
+      question:
+        type: string
+        description: The user's engineering question about the current situation.
+        required: false
+      controlled_changes:
+        type: array
+        description: >-
+          Dimensions the caller declares as deliberate, controlled differences.
+          Declaring one changes how it is labelled, not whether it is reported,
+          and never makes it a confirmed cause.
+        required: false
+
+permissions:
+  services:
+    file: read
+    store: write
+    llm: use

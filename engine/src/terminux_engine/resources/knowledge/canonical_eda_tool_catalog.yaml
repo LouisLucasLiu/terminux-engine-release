@@ -1,0 +1,104 @@
+# Canonical EDA Tool Catalog v1
+#
+# 唯讀資料檔：只記錄「EDA executable identity facts」（canonical id + 真正的
+# executable alias），不記錄任何 execution policy、SAFE/DANGEROUS 分類、
+# dispatch owner 或 approval 邏輯。
+#
+# 收錄範圍：與 scripts/wrapped_tools.txt 的「EDA tool」區塊（不含 Queue
+# Management 區塊）內容一致，即目前 wrapper 實際承認、且有 multi-consumer
+# （wrapper／tool_signatures.yaml／package manifest／orchestration）共同引用
+# 或潛在 drift 風險的真實 EDA executable。
+#
+# 明確排除項目（非獨立 production executable identity）：
+#   - sta_run（logical flow／orchestration capability，非 executable identity）
+#   - mmmc_sum（logical flow／script identity，非 production executable）
+#   - voltus（真實 EDA 工具，但目前 wrapper 未 wrap，屬已知 remaining gap，
+#     不得為了消除 drift 而擅自新增攔截範圍）
+# Queue management 指令（squeue/scancel/bjobs/bkill/qstat/qdel）與
+# queue submit 指令（sbatch/bsub/qsub）不在本 catalog 範圍——它們沒有
+# multi-consumer identity drift 問題，且非「EDA executable」語意。
+#
+# Schema 定義與 loader API：engine/src/terminux_engine/tool_identity/catalog.py
+
+schema_version: 1
+
+tools:
+  dc_shell:
+    executables:
+      - dc_shell
+
+  lc_shell:
+    executables:
+      - lc_shell
+
+  pt_shell:
+    executables:
+      - pt_shell
+
+  primetime:
+    executables:
+      - primetime
+
+  primeclosure:
+    executables:
+      - primeclosure
+
+  icc2_shell:
+    executables:
+      - icc2_shell
+
+  innovus:
+    executables:
+      - innovus
+
+  xrun:
+    executables:
+      - xrun
+
+  vcs:
+    executables:
+      - vcs
+
+  rtl_lint:
+    executables:
+      - rtl_lint
+
+  cov_merge:
+    executables:
+      - cov_merge
+
+  cdc_check:
+    executables:
+      - cdc_check
+
+  jasper_formal:
+    executables:
+      - jasper_formal
+
+  spyglass:
+    executables:
+      - spyglass
+
+  conformal:
+    executables:
+      - conformal
+
+  quantus:
+    executables:
+      - quantus
+
+  starrc:
+    executables:
+      - starrc
+
+  tempus:
+    executables:
+      - tempus
+
+  hspice:
+    executables:
+      - hspice
+
+  virtuoso:
+    executables:
+      - virtuoso

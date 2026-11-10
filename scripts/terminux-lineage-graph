@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+"""生成 lineage graph HTML 並用瀏覽器開啟。
+
+Usage:
+    terminux-lineage-graph [jobs] [--ledger PATH] [--session SESS1,SESS2] [--output PATH] [--no-open]
+        artifact lineage graph（預設）。--session 篩選 session；多個 session 時依 session 著色。
+    terminux-lineage-graph trace --session SESS [--event-store PATH] [--output PATH] [--no-open]
+        execution DAG。從 event_store 查 trace_parent → trace_self 渲染 process tree。
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "engine" / "src"))
+
+from terminux_engine.lineage.exec_graph import build_exec_dag, render_exec_dag_html
+from terminux_engine.lineage.graph import render_lineage_html
+from terminux_engine.lineage.ledger import load_job_commits
+from terminux_engine.ipc.daemon_owner import check_local_database_access
+from terminux_engine.store.event_store import EventStore
+
+
+def _open_browser(path: str) -> None:
+    try:
+        subprocess.run(["xdg-open", path], check=False)
+    except FileNotFoundError:
+        print("xdg-open not found. Please open the file manually.")
+
+
+def _cmd_jobs(args: argparse.Namespace) -> int:
+    """View A：artifact lineage graph，可選 --session filter + 多 session 著色。"""
+    ledger_path = os.path.expanduser(args.ledger)
+    output_path = os.path.expanduser(args.output)
+
+    commits = load_job_commits(ledger_path)
+    if not commits:
+        print(f"No commits found in {ledger_path}")
+        return 1
+
+    if args.session:
+        filter_set = {s.strip() for s in args.session.split(",") if s.strip()}
+        commits = [c for c in commits if c.trace_root in filter_set]
+        if not commits:
+            print(f"No commits match --session filter: {sorted(filter_set)}")
+            return 1
+
+    html_content = render_lineage_html(commits)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    print(f"Lineage graph generated: {output_path}")
+    print(f"  {len(commits)} job(s) rendered")
+    if not args.no_open:
+        _open_browser(output_path)
+    return 0
+
+
+def _cmd_trace(args: argparse.Namespace) -> int:
+    """View B：execution DAG，從 event_store 查 trace_root 的 process tree。"""
+    db_path = os.path.expanduser(args.event_store)
+    output_path = os.path.expanduser(args.output)
+
+    if not Path(db_path).exists():
+        print(f"Event store not found: {db_path}")
+        return 1
+
+    store = EventStore(db_path)
+    try:
+        mermaid = build_exec_dag(store, args.session)
+    finally:
+        store.close()
+
+    if mermaid.strip() == "flowchart TD":
+        print(f"No execution events found for session: {args.session}")
+        return 1
+
+    html_content = render_exec_dag_html(mermaid, title=f"Execution Trace: {args.session}")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    print(f"Execution DAG generated: {output_path}")
+    if not args.no_open:
+        _open_browser(output_path)
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="生成 Terminux lineage graph HTML。")
+    subparsers = parser.add_subparsers(dest="command")
+
+    jobs_p = subparsers.add_parser("jobs", help="Artifact lineage graph（預設）")
+    jobs_p.add_argument("--ledger", default="~/.terminux/lineage/ledger.jsonl")
+    jobs_p.add_argument("--session", default=None,
+                        help="Filter by trace_root（comma-separated；多 session 自動著色）")
+    jobs_p.add_argument("--output", default="~/.terminux/lineage_graph.html")
+    jobs_p.add_argument("--no-open", action="store_true")
+
+    trace_p = subparsers.add_parser("trace", help="Execution trace DAG")
+    trace_p.add_argument("--session", required=True, help="trace_root (sess_xxx)")
+    trace_p.add_argument("--event-store", default="~/.terminux/ecc/event_store.db")
+    trace_p.add_argument("--output", default="~/.terminux/exec_trace_dag.html")
+    trace_p.add_argument("--no-open", action="store_true")
+
+    args = parser.parse_args()
+
+    owner_check = check_local_database_access()
+    if owner_check:
+        return owner_check
+
+    if args.command is None:
+        # 向後相容：不帶 subcommand 時 default 走 jobs（用既有預設值）
+        args.command = "jobs"
+        args.ledger = os.path.expanduser("~/.terminux/lineage/ledger.jsonl")
+        args.session = None
+        args.output = os.path.expanduser("~/.terminux/lineage_graph.html")
+        args.no_open = False
+
+    if args.command == "jobs":
+        return _cmd_jobs(args)
+    if args.command == "trace":
+        return _cmd_trace(args)
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

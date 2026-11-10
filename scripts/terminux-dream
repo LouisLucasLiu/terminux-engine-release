@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+"""terminux-dream — Daily cron CLI 薄包裝。"""
+
+import sys
+
+from terminux_engine.cli.dream import main
+
+sys.exit(main())

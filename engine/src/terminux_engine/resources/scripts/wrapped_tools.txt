@@ -1,0 +1,24 @@
+# Terminux 非-EDA wrapper 清單（走 _terminux_wrapper，同 EDA tool 機制）
+# 一行一個 tool name。# 開頭是註解、空行忽略。
+# Site admin 想停用某個 tool 在前面加 # 即可，重跑 terminux-setup-wrappers 不會
+# 主動移除既有 symlink；要刪除請手動 `rm ~/.terminux/bin/<tool>`。
+#
+# 真正的 EDA CAD tool（dc_shell/pt_shell/innovus/... 等）清單已改由 Canonical
+# EDA Tool Catalog（knowledge/canonical_eda_tool_catalog.yaml）提供，
+# terminux-setup-wrappers 透過 `python -m terminux_engine.tool_identity
+# --list-executables` 讀取，不再從本檔案讀取——避免與 tool_signatures.yaml／
+# package manifest／orchestration 端各自維護的 EDA tool identity 產生 drift。
+# 本檔案只保留「走同一支 _terminux_wrapper，但不是 EDA executable identity」
+# 的項目。
+
+# Queue Management
+# 走既有 _terminux_wrapper，event_type=tool_exec；下游 query 用 tool_name 區分
+# Slurm
+squeue
+scancel
+# LSF
+bjobs
+bkill
+# SGE
+qstat
+qdel

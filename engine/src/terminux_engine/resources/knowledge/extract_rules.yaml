@@ -1,0 +1,54 @@
+rules:
+  - id: pt_shell_signature
+    description: "PrimeTime tool signature"
+    match:
+      command_contains: "pt_shell"
+    extract:
+      - source: command
+        method: static
+        target: tool_signature
+        value: primetime
+
+  - id: starrc_signature
+    description: "StarRC tool signature"
+    match:
+      command_contains: "starrc"
+    extract:
+      - source: command
+        method: static
+        target: tool_signature
+        value: starrc
+
+  - id: rcxt_signature
+    description: "RCX tool signature"
+    match:
+      command_contains: "rcxt"
+    extract:
+      - source: command
+        method: static
+        target: tool_signature
+        value: rcxt
+
+  - id: pt_wns
+    description: "PrimeTime WNS extraction"
+    match:
+      command_contains: "pt_shell"
+    extract:
+      - source: stdout_summary
+        method: regex
+        target: wns
+        pattern: "WNS\\s*[=:]\\s*(-?[0-9]+\\.?[0-9]*)"
+        capture_group: 1
+        value_type: float
+
+  - id: pt_tns
+    description: "PrimeTime TNS extraction"
+    match:
+      command_contains: "pt_shell"
+    extract:
+      - source: stdout_summary
+        method: regex
+        target: tns
+        pattern: "TNS\\s*[=:]\\s*(-?[0-9]+\\.?[0-9]*)"
+        capture_group: 1
+        value_type: float

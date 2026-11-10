@@ -1,0 +1,84 @@
+#!/bin/bash
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+# Terminux EDA tool wrapper entry point.
+#
+# 每個 EDA tool 是指向本腳本的 symlink（例：~/.terminux/bin/dc_shell -> _terminux_wrapper）。
+# basename "$0" 取得 symlink 名稱 = tool name。
+#
+# 重要：禁止使用 realpath / readlink -f，會解析 symlink 到 _terminux_wrapper、
+# 失去 tool name 資訊。只用 $0 / basename "$0"。
+
+set -euo pipefail
+
+# Source 共用 library；相對路徑（dirname "$0" 是 symlink 所在目錄）
+source "$(dirname "$0")/_wrapper_lib.sh"
+
+tool_name="$(basename "$0")"
+
+# 防止直接呼叫（非透過 symlink）
+if [[ "$tool_name" == "_terminux_wrapper" ]]; then
+    echo "_terminux_wrapper: must be invoked via symlink (e.g. dc_shell -> _terminux_wrapper)" >&2
+    exit 2
+fi
+
+# 找真 tool
+real_tool="$(terminux_find_real_tool "$tool_name")" || {
+    echo "$tool_name: command not found" >&2
+    exit 127
+}
+
+# 不在 Terminux 環境 → 透明 fall-through，不寫 lineage event
+if [[ -z "${TERMINUX_TRACE_ROOT:-}" ]]; then
+    exec "$real_tool" "$@"
+fi
+
+# Terminux 環境 → advance trace chain + 記錄 + 觸發 lineage check + exec 真 tool
+_terminux_advance_trace_chain
+terminux_log_event "$tool_name" "$@"
+
+# Observability carrier v1：把剛推進好的 trace chain（本次 invocation 的
+# TERMINUX_TRACE_ROOT/SELF/PARENT）透過 terminux-notify 明確傳給 daemon，
+# 純 observability metadata，不影響 dispatch 判斷。缺失時各自省略對應 flag
+# （terminux-notify 端保持 None，不猜測、不從 ambient environment 另外讀取）。
+_trace_flags=()
+[[ -n "${TERMINUX_TRACE_ROOT:-}" ]] && _trace_flags+=(--trace-root "$TERMINUX_TRACE_ROOT")
+[[ -n "${TERMINUX_TRACE_SELF:-}" ]] && _trace_flags+=(--trace-self "$TERMINUX_TRACE_SELF")
+[[ -n "${TERMINUX_TRACE_PARENT:-}" ]] && _trace_flags+=(--trace-parent "$TERMINUX_TRACE_PARENT")
+
+# Wrapper 端 fire pre_exec：tcsh postcmd 內 `history -h 1` 時序不穩，shell hook
+# 不一定能拿到 expanded cmd（例：!N、alias）。Wrapper 是執行 EDA tool 的唯一
+# 入口、cmd + cwd 100% 確定，從這裡發 pre_exec 最權威。daemon 走 lineage check
+# + emit nudge → NotificationBar 顯示 lineage warn。
+# 用 `&` 背景化：daemon 跑 explainer 可能 10s+，wrapper 不能 block exec real tool。
+# 失敗 silent（daemon 不在線時 terminux-notify exit 0）、不阻擋 tool 執行。
+if [[ -x "$HOME/.terminux/bin/terminux-notify" ]]; then
+    # setsid 讓 pre_exec 進入獨立 session：tool 很快結束時（模擬器 < 1s）wrapper
+    # 隨即 exit，背景化的 pre_exec（daemon 跑 explainer 需 ~1.5s）會被一起收掉 →
+    # pre_exec 漏發。detach 後不受 wrapper 退出影響，nudge 才會穩定送達。
+    setsid "$HOME/.terminux/bin/terminux-notify" pre_exec "$tool_name $*" "$PWD" --pid $$ \
+        "${_trace_flags[@]}" \
+        </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+fi
+
+# 不能用 exec：exec 會以 real tool 取代本 process，wrapper 將無法在 tool 結束後
+# fire post_exec。改為以 child 執行、捕捉 exit code、再 fire post_exec。
+#
+# 為什麼 post_exec 要從 wrapper 發（而非僅靠 shell hook / OSC 133）：
+# - tcsh postcmd 時序不穩、OSC 133 prompt marker 在 `cd X; tool; cd ..` 這類
+#   快速序列中會 race 或漏發 → post-exec record 時有時無。wrapper 是 tool 的唯一入口，100% 觸發。
+# - cwd 用 tool 執行當下的 $PWD，不受之後 cd .. 影響，daemon 才能對到正確目錄。
+set +e
+"$real_tool" "$@"
+_tool_exit=$?
+set -e
+
+if [[ -x "$HOME/.terminux/bin/terminux-notify" ]]; then
+    # 同步發送：daemon 端 record 重算走背景 thread、RPC 很快返回；失敗 silent
+    # （daemon 不在線時 terminux-notify exit 0），不影響 tool 的 exit code。
+    "$HOME/.terminux/bin/terminux-notify" post_exec "$_tool_exit" "$PWD" "$tool_name $*" \
+        --source wrapper --pid $$ "${_trace_flags[@]}" </dev/null >/dev/null 2>&1 || true
+fi
+
+exit $_tool_exit

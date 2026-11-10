@@ -1,0 +1,249 @@
+{
+  "policy_id": "orfs_dqe",
+  "policy_version": "v2",
+  "description": "v2 deterministic DQE policy with unrounded critical path setup slack extraction.",
+  "required_roles": [
+    "orfs.finish_report",
+    "orfs.finish_log",
+    "orfs.route_drc_report",
+    "orfs.final_layout",
+    "orfs.final_def",
+    "orfs.final_database",
+    "orfs.final_netlist"
+  ],
+  "deliverable_roles": [
+    "orfs.final_layout",
+    "orfs.final_def",
+    "orfs.final_database",
+    "orfs.final_netlist"
+  ],
+  "checks": [
+    {
+      "check_id": "orfs_manifest_integrity",
+      "category": "manifest_integrity",
+      "title": "Artifact manifest identity and canonical hash",
+      "mandatory": true,
+      "source_role": null,
+      "extractor": "manifest_integrity",
+      "unit": null,
+      "comparator": null,
+      "threshold": null,
+      "threshold_provenance": "Immutable artifact manifest contract: manifest id, canonical SHA-256, schema version and producer identity must all agree with the TimelineEvent metadata."
+    },
+    {
+      "check_id": "orfs_artifact_completeness",
+      "category": "artifact_completeness",
+      "title": "Required artifact roles present and stable",
+      "mandatory": true,
+      "source_role": null,
+      "extractor": "artifact_completeness",
+      "unit": "roles",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "Package policy: every role in required_roles must be availability=present and stability=stable; the compared value is the count of roles that are not."
+    },
+    {
+      "check_id": "orfs_final_deliverables",
+      "category": "final_deliverables",
+      "title": "Final layout/DEF/database/netlist produced",
+      "mandatory": true,
+      "source_role": null,
+      "extractor": "final_deliverables",
+      "unit": "roles",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "ORFS flow/Makefile `finish` target produces 6_final.gds/def/odb/v; the compared value is the count of deliverable_roles that are missing or unstable."
+    },
+    {
+      "check_id": "orfs_process_exit_code",
+      "category": "execution_fact",
+      "title": "Tool process exit code",
+      "mandatory": true,
+      "source_role": null,
+      "extractor": "process_exit_code",
+      "unit": null,
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "Execution fact carried by the Kernel TimelineEvent. Recorded, never rewritten by this package."
+    },
+    {
+      "check_id": "orfs_setup_wns",
+      "category": "timing",
+      "title": "Setup worst negative slack (WNS)",
+      "mandatory": true,
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish report_wns",
+        "pattern": "^wns max\\s+(?P<value>[-+0-9.eE]+)$"
+      },
+      "unit": "ns",
+      "comparator": ">=",
+      "threshold": 0.0,
+      "threshold_provenance": "Signoff meaning of setup slack: negative slack is a timing violation, so the check fails when WNS < 0. This is NOT the ORFS per-design regression bound."
+    },
+    {
+      "check_id": "orfs_critical_path_slack",
+      "category": "timing",
+      "title": "Critical path setup slack",
+      "mandatory": true,
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish critical path slack",
+        "pattern": "^(?P<value>[-+0-9.eE]+)$"
+      },
+      "unit": "ns",
+      "comparator": ">=",
+      "threshold": 0.0,
+      "threshold_provenance": "Unbounded critical path setup slack from OpenSTA find_timing_paths -sort_by_slack in 6_finish.rpt, preserving positive guardband slack without 0.00 truncation."
+    },
+    {
+      "check_id": "orfs_setup_tns",
+      "category": "timing",
+      "title": "Setup total negative slack (TNS)",
+      "mandatory": false,
+      "severity_on_fail": "warn",
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish report_tns",
+        "pattern": "^tns max\\s+(?P<value>[-+0-9.eE]+)$"
+      },
+      "unit": "ns",
+      "comparator": ">=",
+      "threshold": 0.0,
+      "threshold_provenance": "Aggregate severity companion to WNS; warn-only because TNS restates the same violation set."
+    },
+    {
+      "check_id": "orfs_setup_violation_count",
+      "category": "timing",
+      "title": "Setup violation path count",
+      "mandatory": true,
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish setup_violation_count",
+        "pattern": "^setup violation count\\s+(?P<value>\\d+)$"
+      },
+      "unit": "paths",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "Signoff rule: any setup-violating path (count > 0) is a timing violation."
+    },
+    {
+      "check_id": "orfs_hold_violation_count",
+      "category": "timing",
+      "title": "Hold violation path count",
+      "mandatory": true,
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish hold_violation_count",
+        "pattern": "^hold violation count\\s+(?P<value>\\d+)$"
+      },
+      "unit": "paths",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "Signoff rule: any hold-violating path (count > 0) is a timing violation."
+    },
+    {
+      "check_id": "orfs_max_slew_violation_count",
+      "category": "design_rule",
+      "title": "Max transition (slew) violation count",
+      "mandatory": false,
+      "severity_on_fail": "warn",
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish max_slew_violation_count",
+        "pattern": "^max slew violation count\\s+(?P<value>\\d+)$"
+      },
+      "unit": "violations",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "Signoff design rule: any max transition (slew) violation (count > 0) is reported; warn-only."
+    },
+    {
+      "check_id": "orfs_max_fanout_violation_count",
+      "category": "design_rule",
+      "title": "Max fanout violation count",
+      "mandatory": false,
+      "severity_on_fail": "warn",
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish max_fanout_violation_count",
+        "pattern": "^max fanout violation count\\s+(?P<value>\\d+)$"
+      },
+      "unit": "violations",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "OpenSTA max_fanout design-rule check reported by the ORFS finish stage; warn-only, same family as the slew check."
+    },
+    {
+      "check_id": "orfs_max_cap_violation_count",
+      "category": "design_rule",
+      "title": "Max capacitance violation count",
+      "mandatory": false,
+      "severity_on_fail": "warn",
+      "source_role": "orfs.finish_report",
+      "extractor": "finish_section_scalar",
+      "extractor_args": {
+        "section": "finish max_cap_violation_count",
+        "pattern": "^max cap violation count\\s+(?P<value>\\d+)$"
+      },
+      "unit": "violations",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "OpenSTA max_capacitance design-rule check reported by the ORFS finish stage; warn-only, same family as the slew check."
+    },
+    {
+      "check_id": "orfs_route_drc_violation_count",
+      "category": "routing_drc",
+      "title": "Detailed-route DRC violation count",
+      "mandatory": true,
+      "source_role": "orfs.route_drc_report",
+      "extractor": "drc_violation_count",
+      "unit": "violations",
+      "comparator": "<=",
+      "threshold": 0,
+      "threshold_provenance": "ORFS source: flow/designs/nangate45/gcd/rules-base.json key `detailedroute__route__drc_errors` = {value: 0, compare: '<='}. Counting rule taken from ORFS flow/util/genReport.py (count of lines containing 'violation type:') and flow/util/viewDrc.py (same marker), so an empty report means zero violations."
+    },
+    {
+      "check_id": "orfs_log_error_markers",
+      "category": "fatal_evidence",
+      "title": "ORFS log error markers",
+      "mandatory": true,
+      "source_role": "orfs.finish_log",
+      "extractor": "log_marker_count",
+      "extractor_args": {
+        "kind": "error"
+      },
+      "unit": "markers",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "ORFS source: flow/util/genReport.py REGEX_ERROR = r'^\\[error ?(\\w+-\\d+)?\\]' (case-insensitive), whose presence sets ORFS's own STATUS_RED. Anchored at line start so the word 'error' inside prose is not matched."
+    },
+    {
+      "check_id": "orfs_log_warning_markers",
+      "category": "fatal_evidence",
+      "title": "ORFS log warning markers",
+      "mandatory": false,
+      "severity_on_fail": "warn",
+      "source_role": "orfs.finish_log",
+      "extractor": "log_marker_count",
+      "extractor_args": {
+        "kind": "warning"
+      },
+      "unit": "markers",
+      "comparator": "==",
+      "threshold": 0,
+      "threshold_provenance": "ORFS source: flow/util/genReport.py REGEX_WARNING = r'^\\[warning ?(\\w+-\\d+)?\\]' (case-insensitive). ORFS reports warnings without setting STATUS_RED, so this is warn-only here too."
+    }
+  ],
+  "aggregation": {
+    "rule": "any_mandatory_fail_then_fail; else_any_warn_then_warn; else_any_mandatory_unknown_then_unknown; else_pass",
+    "optional_unknown_never_becomes_pass": true
+  }
+}

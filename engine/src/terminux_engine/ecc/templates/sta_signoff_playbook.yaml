@@ -1,0 +1,177 @@
+playbook:
+  id: PB_IC_STA_SIGNOFF
+  name: "IC Design STA Signoff Flow"
+  description: "從試驗分析到最終簽核之 STA 品質管控劇本"
+  playbook_type: "signoff_numeric"
+  version: "1.0.0"
+
+  milestone_model:
+    milestones:
+      - id: MS_TRIAL
+        name: "Trial Run"
+        stages: [STAGE_STA_TRIAL]
+      - id: MS_OPT
+        name: "Optimization"
+        stages: [STAGE_STA_OPT]
+      - id: MS_SIGNOFF
+        name: "Signoff"
+        stages: [STAGE_STA_SIGNOFF]
+
+  stage_specs:
+    - id: STAGE_STA_TRIAL
+      name: "STA Trial Analysis"
+      tool_signatures:
+        commands: ["sta_run", "primetime", "pt_shell", "tempus"]
+        work_directory_pattern: "*/sta/trial/*"
+      required_reports:
+        - pattern: "reports/*_timing.rpt"
+          min_count: 1
+      parsing_rules:
+        - id: PARSE_WNS
+          type: regex
+          target_file: "*_timing.rpt"
+          pattern: "WNS[:\\s]+([\\-]?[0-9]+\\.[0-9]+)"
+          metric_name: "wns_ns"
+          data_type: float
+        - id: PARSE_TNS
+          type: regex
+          target_file: "*_timing.rpt"
+          pattern: "TNS[:\\s]+([\\-]?[0-9]+\\.[0-9]+)"
+          metric_name: "tns_ns"
+          data_type: float
+        - id: PARSE_VIOL_COUNT
+          type: regex
+          target_file: "*_timing.rpt"
+          pattern: "Violating paths[:\\s]+([0-9]+)"
+          metric_name: "violating_path_count"
+          data_type: int
+      quality_gates:
+        - id: GATE_WNS_TRIAL
+          metric: "wns_ns"
+          operator: ">="
+          threshold: -0.100
+          on_fail: "WARN"
+          description: "Trial 階段 WNS 容許至 -0.1ns"
+        - id: GATE_TNS_TRIAL
+          metric: "tns_ns"
+          operator: ">="
+          threshold: -10.000
+          on_fail: "WARN"
+          description: "Trial 階段 TNS 容許至 -10ns"
+      trigger_action_map:
+        - condition: "GATE_WNS_TRIAL == FAIL"
+          actions: [LOG_WARNING, NOTIFY_DESIGNER]
+        - condition: "ALL_GATES == PASS"
+          actions: [LOG_PASS, RECORD_AUDIT]
+      completion_rule:
+        condition: "at_least_one_corner_reported AND no_critical_failure"
+
+    - id: STAGE_STA_OPT
+      name: "STA Optimization"
+      tool_signatures:
+        commands: ["sta_run", "primetime", "pt_shell", "tempus"]
+        work_directory_pattern: "*/sta/opt/*"
+      required_reports:
+        - pattern: "reports/*_timing.rpt"
+          min_count: 3
+      parsing_rules: []
+      quality_gates:
+        - id: GATE_WNS_OPT
+          metric: "wns_ns"
+          operator: ">="
+          threshold: -0.010
+          on_fail: "BLOCK_NEXT_STAGE"
+          description: "Opt 階段 WNS 需收斂至 -0.01ns 以內"
+        - id: GATE_TNS_OPT
+          metric: "tns_ns"
+          operator: ">="
+          threshold: -1.000
+          on_fail: "BLOCK_NEXT_STAGE"
+          description: "Opt 階段 TNS 需收斂至 -1ns 以內"
+      trigger_action_map:
+        - condition: "ANY_GATE == FAIL"
+          actions: [BLOCK_PROMOTION, NOTIFY_DESIGNER, LOG_BLOCK]
+        - condition: "ALL_GATES == PASS"
+          actions: [ALLOW_PROMOTION, NOTIFY_LEAD, RECORD_AUDIT]
+
+    - id: STAGE_STA_SIGNOFF
+      name: "STA Signoff"
+      tool_signatures:
+        commands: ["sta_run", "primetime", "pt_shell", "tempus"]
+        work_directory_pattern: "*/sta/signoff/*"
+      recommended_corner_order:
+        - ss_0p72v_m40c
+        - ss_0p72v_125c
+        - ff_0p88v_m40c
+        - ff_0p88v_125c
+        - ss_0p72v_m40c_rcmax
+        - ss_0p72v_125c_rcmax
+        - ff_0p88v_m40c_rcmin
+        - ff_0p88v_125c_rcmin
+        - tt_0p80v_25c
+        - tt_0p80v_25c_rctyp
+        - ss_0p72v_m40c_aging
+        - ff_0p88v_125c_aging
+      required_reports:
+        - pattern: "reports/*_timing.rpt"
+          min_count: 12
+          corner_list:
+            - ss_0p72v_m40c
+            - ss_0p72v_125c
+            - tt_0p80v_25c
+            - ff_0p88v_m40c
+            - ff_0p88v_125c
+            - ss_0p72v_m40c_rcmax
+            - ss_0p72v_125c_rcmax
+            - ff_0p88v_m40c_rcmin
+            - ff_0p88v_125c_rcmin
+            - tt_0p80v_25c_rctyp
+            - ss_0p72v_m40c_aging
+            - ff_0p88v_125c_aging
+      parsing_rules:
+        - id: PARSE_WNS
+          type: regex
+          target_file: "*_timing.rpt"
+          pattern: "WNS[:\\s]+([\\-]?[0-9]+\\.[0-9]+)"
+          metric_name: "wns_ns"
+          data_type: float
+        - id: PARSE_TNS
+          type: regex
+          target_file: "*_timing.rpt"
+          pattern: "TNS[:\\s]+([\\-]?[0-9]+\\.[0-9]+)"
+          metric_name: "tns_ns"
+          data_type: float
+        - id: PARSE_VIOL_COUNT
+          type: regex
+          target_file: "*_timing.rpt"
+          pattern: "Violating paths[:\\s]+([0-9]+)"
+          metric_name: "violating_path_count"
+          data_type: int
+      quality_gates:
+        - id: GATE_WNS_SIGNOFF
+          metric: "wns_ns"
+          operator: ">="
+          threshold: 0.000
+          on_fail: "BLOCK_TAPEOUT"
+          scope: "ALL_CORNERS"
+          description: "Signoff 階段全部 corner 之 WNS 必須 >= 0"
+        - id: GATE_TNS_SIGNOFF
+          metric: "tns_ns"
+          operator: ">="
+          threshold: 0.000
+          on_fail: "BLOCK_TAPEOUT"
+          scope: "ALL_CORNERS"
+          description: "Signoff 階段全部 corner 之 TNS 必須 >= 0"
+        - id: GATE_COVERAGE_SIGNOFF
+          metric: "corner_coverage"
+          operator: "=="
+          threshold: 1.0
+          on_fail: "BLOCK_TAPEOUT"
+          description: "全部 12 個 corner 之報告必須齊全"
+      trigger_action_map:
+        - condition: "GATE_COVERAGE_SIGNOFF == FAIL"
+          actions: [BLOCK_TAPEOUT, NOTIFY_MISSING_CORNERS, LOG_BLOCK]
+        - condition: "GATE_WNS_SIGNOFF == FAIL OR GATE_TNS_SIGNOFF == FAIL"
+          actions: [BLOCK_TAPEOUT, NOTIFY_DESIGNER, NOTIFY_PROJECT_MANAGER, LOG_BLOCK]
+        - condition: "ALL_GATES == PASS"
+          actions: [ALLOW_TAPEOUT, GENERATE_SIGNOFF_REPORT, NOTIFY_ALL_STAKEHOLDERS, RECORD_AUDIT]

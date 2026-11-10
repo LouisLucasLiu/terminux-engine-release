@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+# GUI 互動 bash 保留使用者設定，再載入 Terminux 整合。
+if [[ -f "$HOME/.bashrc" ]]; then
+    source "$HOME/.bashrc"
+fi
+if [[ -f "$HOME/.terminux/bash_hooks.sh" ]]; then
+    source "$HOME/.terminux/bash_hooks.sh"
+fi

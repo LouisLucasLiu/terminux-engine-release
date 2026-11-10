@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+"""terminux-build-rag-index — RAG 知識庫 index 建置 CLI。
+
+Usage:
+    terminux-build-rag-index                              # 預設 source ~/.terminux/rag_knowledge/
+    terminux-build-rag-index --source-dir /path/to/docs   # 指定來源
+    terminux-build-rag-index --chunk-size 256 --chunk-overlap 32
+
+Env:
+    TERMINUX_EMBEDDING_BACKEND=local 搭配 TERMINUX_EMBEDDING_MODEL_PATH 可離線建置
+    GEMINI_API_KEY 或 TERMINUX_GEMINI_API_KEY 可使用 Gemini embedding API
+
+支援副檔名：.yaml / .yml / .md / .txt / .json
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Build RAG knowledge index for Terminux AI Companion",
+    )
+    p.add_argument(
+        "--source-dir",
+        default=os.path.expanduser("~/.terminux/rag_knowledge"),
+        help="Source directory containing knowledge files (default: %(default)s)",
+    )
+    p.add_argument(
+        "--index-dir",
+        default=os.path.expanduser("~/.terminux/rag_index"),
+        help="Output directory for persisted index (default: %(default)s)",
+    )
+    p.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="Chunk size in tokens (default: %(default)s)",
+    )
+    p.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=64,
+        help="Chunk overlap in tokens (default: %(default)s)",
+    )
+    p.add_argument(
+        "--model",
+        default=os.environ.get("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001"),
+        help="Gemini embedding model name (default: %(default)s)",
+    )
+    p.add_argument(
+        "--backend",
+        choices=("gemini", "local"),
+        help="Embedding backend（覆蓋 TERMINUX_EMBEDDING_BACKEND）",
+    )
+    p.add_argument(
+        "--model-path",
+        help="Local GGUF model path（覆蓋 TERMINUX_EMBEDDING_MODEL_PATH）",
+    )
+    return p.parse_args()
+
+
+def main() -> int:
+    args = _parse_args()
+
+    if args.backend is not None:
+        os.environ["TERMINUX_EMBEDDING_BACKEND"] = args.backend
+    if args.model_path is not None:
+        os.environ["TERMINUX_EMBEDDING_MODEL_PATH"] = args.model_path
+    os.environ["GEMINI_EMBEDDING_MODEL"] = args.model
+
+    source = Path(args.source_dir).expanduser()
+    if not source.exists() or not source.is_dir():
+        print(f"error: source dir not found: {source}", file=sys.stderr)
+        return 2
+
+    # 延遲 import：避免單純 --help 也要付 llama-index import 成本
+    from terminux_engine.llm.embedding_factory import build_rag_embedding
+    from terminux_engine.llm.rag_index import RAGIndex
+    from terminux_engine.rag.knowledge_codec import resolve_shared_knowledge_dir
+    from terminux_engine.rag.shared_knowledge import (
+        compute_shared_fingerprint,
+        load_shared_documents,
+        save_fingerprint,
+    )
+
+    try:
+        embed_model = build_rag_embedding()
+    except Exception as e:
+        print(f"error: embedding init failed: {e}", file=sys.stderr)
+        return 3
+    if embed_model is None:
+        print(
+            "error: no embedding backend is configured. Set GEMINI_API_KEY or "
+            "TERMINUX_EMBEDDING_BACKEND=local with "
+            "TERMINUX_EMBEDDING_MODEL_PATH.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"Building RAG index")
+    print(f"  source:        {source}")
+    print(f"  output:        {args.index_dir}")
+    print(f"  chunk_size:    {args.chunk_size}")
+    print(f"  chunk_overlap: {args.chunk_overlap}")
+    print(f"  embed_model:   {embed_model.model_name}")
+    shared_directory = resolve_shared_knowledge_dir()
+    print(f"  shared:        {shared_directory or 'not deployed'}")
+    print()
+
+    try:
+        stats = RAGIndex.build_from_directory(
+            source_dir=source,
+            index_dir=args.index_dir,
+            embedding=embed_model,
+            chunk_size=args.chunk_size,
+            chunk_overlap=args.chunk_overlap,
+            extra_documents=load_shared_documents(shared_directory),
+        )
+        save_fingerprint(
+            Path(args.index_dir).expanduser(),
+            compute_shared_fingerprint(shared_directory),
+        )
+    except FileNotFoundError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"error: index build failed: {e}", file=sys.stderr)
+        return 4
+
+    print("Done.")
+    print(f"  files_read:  {stats['files_read']}")
+    print(f"  chunks:      {stats['chunks']}")
+    print(f"  total_bytes: {stats['total_bytes']}")
+    print(f"  elapsed_sec: {stats['elapsed_sec']:.2f}")
+    print(f"  index_dir:   {stats['index_dir']}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

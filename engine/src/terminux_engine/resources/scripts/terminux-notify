@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+"""terminux-notify — Shell hook helper，送 lifecycle event 到 daemon。
+
+連接 $TERMINUX_SOCK 或本機 run/<nodename>/lineage.sock，
+送 JSON-RPC shell.pre_exec / shell.post_exec request。
+靜默失敗：daemon 不在線 → exit 0，不報錯，不阻塞 shell。
+使用 Terminux 的集中路徑與主機身分解析。
+"""
+
+import json
+import os
+import socket
+import sys
+import time
+from terminux_engine.ipc.agent_socket import AgentSocketError, client_lineage_socket, local_nodename
+
+TIMEOUT = 2  # 秒（shell hook 必須快）
+
+
+def _extract_flags(
+    argv: list[str],
+) -> tuple[list[str], int | None, str | None, str | None, str | None, str | None, str | None]:
+    """從 argv 抽出 --pid <int>／--source <str>／--tool-name <str>／
+    --trace-root <str>／--trace-self <str>／--trace-parent <str> flag，回傳
+    (剩餘 positional, pid, source, tool_name, trace_root, trace_self,
+    trace_parent)。解析失敗（非整數／缺值）對應值回 None，不報錯。
+
+    --tool-name 只給 shell.post_exec host tool identity validation 的測試與
+    驗證使用——production wrapper／
+    shell hook 皆不會帶這個 flag，daemon 端一律把它當 client claim 做
+    comparison-only 驗證，不可能單獨決定 dispatch。
+
+    --trace-root／--trace-self／--trace-parent 是 observability carrier v1
+    的欄位——純 client-declared metadata，只有 wrapper 在自己剛推進
+    trace chain 後才會明確傳入這三個 flag；本 script **不**自行從 ambient
+    environment 讀取 TERMINUX_TRACE_* 變數（避免不同呼叫端
+    意外「共享」同一個殘留環境值，製造假的 correlation）。缺失時皆為
+    None，daemon 端一律視為未提供，完全不影響 dispatch 判斷。"""
+    out: list[str] = []
+    pid: int | None = None
+    source: str | None = None
+    tool_name: str | None = None
+    trace_root: str | None = None
+    trace_self: str | None = None
+    trace_parent: str | None = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--pid" and i + 1 < len(argv):
+            try:
+                pid = int(argv[i + 1])
+            except ValueError:
+                pid = None
+            i += 2
+            continue
+        if argv[i] == "--source" and i + 1 < len(argv):
+            source = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] == "--tool-name" and i + 1 < len(argv):
+            tool_name = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] == "--trace-root" and i + 1 < len(argv):
+            trace_root = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] == "--trace-self" and i + 1 < len(argv):
+            trace_self = argv[i + 1]
+            i += 2
+            continue
+        if argv[i] == "--trace-parent" and i + 1 < len(argv):
+            trace_parent = argv[i + 1]
+            i += 2
+            continue
+        out.append(argv[i])
+        i += 1
+    return out, pid, source, tool_name, trace_root, trace_self, trace_parent
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        return 0  # 靜默失敗
+
+    subcommand = sys.argv[1]
+    (rest, caller_pid, cli_source, cli_tool_name,
+     cli_trace_root, cli_trace_self, cli_trace_parent) = _extract_flags(sys.argv[2:])
+    # 空字串也 fallback 到 DEFAULT_SOCK（hook 防呆程式可能 setenv ""）
+    try:
+        sock_path = str(client_lineage_socket().path)
+    except (AgentSocketError, ValueError):
+        return 0
+
+    if subcommand == "pre_exec":
+        # terminux-notify pre_exec <command> <cwd> [--pid N]
+        # 走 lineage.pre_exec endpoint（不是 shell.pre_exec）— shell hook 拿到的
+        # cmd 是 expanded form（bash $BASH_COMMAND / tcsh history -h 1），是 lineage
+        # check 的權威來源。daemon source==shell_hook 走完整 handle_pre_exec 路徑
+        # （含 NotificationBar nudge），與 C++ source==qt_terminal_typed 區隔。
+        command = rest[0] if len(rest) > 0 else ""
+        cwd = rest[1] if len(rest) > 1 else ""
+        # daemon `_check_pre_exec_params` 強制要 ledger_path（C++ 端會帶）。shell
+        # hook 沒這資訊，補預設讓 handler 走 _resolve fallback 到 daemon 全域路徑。
+        params: dict = {
+            "command": command,
+            "cwd": cwd,
+            "ledger_path": os.path.expanduser("~/.terminux/lineage.jsonl"),
+            "source": "shell_hook",
+        }
+        if caller_pid is not None:
+            params["pid"] = caller_pid
+            params["nodename"] = local_nodename()
+        if cli_trace_root is not None:
+            params["trace_root"] = cli_trace_root
+        if cli_trace_self is not None:
+            params["trace_self"] = cli_trace_self
+        if cli_trace_parent is not None:
+            params["trace_parent"] = cli_trace_parent
+        request = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "lineage.pre_exec",
+            "params": params,
+        })
+    elif subcommand == "post_exec":
+        # terminux-notify post_exec <exit_code> <cwd> [<command>] [--pid N]
+        try:
+            exit_code = int(rest[0]) if len(rest) > 0 else 0
+        except ValueError:
+            exit_code = 0
+        cwd = rest[1] if len(rest) > 1 else ""
+        command = rest[2] if len(rest) > 2 else ""
+        params = {
+            "exit_code": exit_code,
+            "cwd": cwd,
+            "command": command,
+            "ts": time.time(),
+            # wrapper 帶 --source wrapper；shell hook 不帶 → shell_hook
+            "source": cli_source or "shell_hook",
+        }
+        if caller_pid is not None:
+            params["pid"] = caller_pid
+            params["nodename"] = local_nodename()
+        if cli_tool_name is not None:
+            params["tool_name"] = cli_tool_name
+        if cli_trace_root is not None:
+            params["trace_root"] = cli_trace_root
+        if cli_trace_self is not None:
+            params["trace_self"] = cli_trace_self
+        if cli_trace_parent is not None:
+            params["trace_parent"] = cli_trace_parent
+        request = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "shell.post_exec",
+            "params": params,
+        })
+    else:
+        return 0  # 未知 subcommand，靜默失敗
+
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(TIMEOUT)
+        sock.connect(sock_path)
+    except (OSError, ConnectionRefusedError):
+        # daemon 不在線 → 靜默失敗
+        return 0
+
+    try:
+        sock.sendall((request + "\n").encode("utf-8"))
+
+        # 讀取 response（server 會回 JSON-RPC response，必須讀完才能 close）
+        buf = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\n" in buf:
+                break
+    except (socket.timeout, OSError):
+        # timeout 或連線錯誤 → 靜默失敗
+        pass
+    finally:
+        sock.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

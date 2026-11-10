@@ -1,0 +1,71 @@
+#!/bin/bash
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+# Terminux BASH_ENV hook
+#
+# 由 C++ terminal_widget.cpp 透過 BASH_ENV 環境變數指定為本檔。
+# 每個 non-interactive bash subprocess 啟動時會 source 本檔。
+# Interactive shell 不讀 BASH_ENV（走 .bashrc，與 interactive shell hook 並行）。
+#
+# 職責：
+#   1. Chain-source 站點原版 BASH_ENV（C++ 已將原值存到 _TERMINUX_ORIG_BASH_ENV）
+#   2. TERMINUX_HOOKS_LOADED guard 防重複載入
+#   3. TERMINUX_ACTIVE gate（不在 Terminux 內 → 完全 no-op）
+#   4. PATH 維護：interactive 用 PROMPT_COMMAND、non-interactive 用 DEBUG trap
+#
+# 不做：trace chain advance（wrapper 自己處理）。
+#
+# 已知 limitation：DEBUG trap 不設 set -T，不進 function 內部；
+# 若 module load 與 EDA tool 在同一 function 內，trap 不會在 function 內 fire。
+
+# ── 1. Chain-source 站點原版 BASH_ENV ──
+if [[ -n "${_TERMINUX_ORIG_BASH_ENV:-}" && -r "${_TERMINUX_ORIG_BASH_ENV}" ]]; then
+    source "${_TERMINUX_ORIG_BASH_ENV}"
+fi
+
+# ── 2. Guard 防重複載入 ──
+[[ "${TERMINUX_HOOKS_LOADED:-}" == "1" ]] && return 0
+
+# ── 3. TERMINUX_ACTIVE gate ──
+[[ "${TERMINUX_ACTIVE:-}" != "1" ]] && return 0
+
+export TERMINUX_HOOKS_LOADED=1
+
+# ── 4. PATH 維護 ──
+# 冪等：PATH 已在最前面就直接 return，零成本（DEBUG trap 多次 fire 也安全）。
+_terminux_arm_path() {
+    [[ "$PATH" == "$HOME/.terminux/bin:"* ]] && return 0
+
+    # 移除 PATH 中既有的 ~/.terminux/bin 條目（可能在中間位置）
+    local p=":$PATH:"
+    p="${p//:$HOME\/.terminux\/bin:/:}"
+    p="${p#:}"
+    p="${p%:}"
+
+    export PATH="$HOME/.terminux/bin:$p"
+}
+
+# Hook source 時先做一次
+_terminux_arm_path
+
+# Interactive shell：PROMPT_COMMAND（per-prompt 重排）
+if [[ "$-" == *i* ]]; then
+    PROMPT_COMMAND="_terminux_arm_path${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+else
+    # Non-interactive：DEBUG trap（每 command fire；short-circuit 在 _terminux_arm_path 第一行）
+    trap '_terminux_arm_path' DEBUG
+fi
+
+# ── 5. Queue job TRACE_JOB 填充（opportunistic） ──
+# 在 compute node bash job 內偵測 scheduler 變數，填入 TRACE_JOB。
+# 非 bash shebang（python/csh/perl）的 job script 不 source BASH_ENV → 留空。
+# Lineage 反查 fallback 到 TRACE_QUEUE，TRACE_JOB 不影響核心邏輯。
+if [[ -z "${TERMINUX_TRACE_JOB:-}" ]]; then
+    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        export TERMINUX_TRACE_JOB="slurm_job_${SLURM_JOB_ID}"
+    elif [[ -n "${LSB_JOBID:-}" ]]; then
+        export TERMINUX_TRACE_JOB="lsf_job_${LSB_JOBID}"
+    elif [[ -n "${JOB_ID:-}" ]]; then
+        export TERMINUX_TRACE_JOB="sge_job_${JOB_ID}"
+    fi
+fi

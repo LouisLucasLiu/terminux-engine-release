@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+.pytest_cache/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# C++ build artifacts
+build/
+/build-*/
+*.o
+*.a
+*.so
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Runtime artifacts
+artifacts/
+
+# Temp files
+tree.txt
+rag_knowledge_encoded/

@@ -1,0 +1,27 @@
+version: "0.1.0"
+
+rules:
+  - id: synthesis_inputs_same_anchor
+    enabled: true
+    severity: error
+    applies_to: logic_synthesis
+    message: "All synthesis key inputs must share the same lineage anchor."
+
+  - id: summary_must_have_source_rtl_checksum
+    enabled: true
+    severity: error
+    applies_to: logic_synthesis
+    message: "Summary artifacts used in lineage checking must contain source_rtl_checksum."
+
+  - id: missing_anchor_is_insufficient_evidence
+    enabled: true
+    severity: warning
+    applies_to: logic_synthesis
+    message: "Missing lineage anchor should be treated as insufficient evidence, not mismatch."
+
+  # ── sibling divergence─────────
+  - id: inputs_no_sibling_divergence
+    enabled: true
+    severity: error
+    applies_to: any
+    message: "Inputs trace to sibling branches under a common ancestor — likely mixed lineage from divergent runs."

@@ -1,0 +1,239 @@
+#!/bin/bash
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+# 安裝 Terminux EDA tool wrappers 到 ~/.terminux/bin/。冪等：重跑只補缺失的 symlink。
+#
+# _wrapper_lib.sh 與 _terminux_wrapper 每次跑都覆蓋（Terminux 擁有，用於版本更新）；
+# 個別 tool 的 symlink 不主動覆蓋——若使用者已建立指向其他位置的 symlink，
+# 或將該 tool 名稱的真實檔案放在 ~/.terminux/bin/，本 script 只 log warning 並跳過。
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="$HOME/.terminux/bin"
+HOOKS_DIR="$HOME/.terminux/hooks"
+QUEUE_TOOLS_FILE="$SCRIPT_DIR/queue_tools.txt"
+
+# 移除僅限已確認的 Terminux symlink 與未被改寫的 hook；不清除其他檔案。
+if [[ "${1:-}" == "--remove" && "$#" == 1 ]]; then
+    for directory in "$HOME/.terminux" "$INSTALL_DIR" "$HOOKS_DIR"; do
+        if [[ -L "$directory" ]]; then
+            echo "拒絕移除：安裝目錄是 symlink：$directory" >&2
+            exit 1
+        fi
+    done
+    if [[ -d "$INSTALL_DIR" ]]; then
+        real_install_dir="$(cd "$INSTALL_DIR" && pwd -P)"
+        for link in "$INSTALL_DIR"/*; do
+            [[ -L "$link" ]] || continue
+            resolved="$(readlink -m -- "$link")"
+            for pair in '_terminux_wrapper:terminux-wrapper-entry' \
+                        '_queue_submit_wrapper:terminux-queue-submit-wrapper' \
+                        '_srun_wrapper:terminux-srun-wrapper'; do
+                wrapper="${pair%%:*}"
+                source_name="${pair#*:}"
+                if [[ "$resolved" == "$real_install_dir/$wrapper" &&
+                      ! -L "$INSTALL_DIR/$wrapper" ]] &&
+                   cmp -s -- "$INSTALL_DIR/$wrapper" "$SCRIPT_DIR/$source_name"; then
+                    unlink -- "$link"
+                    echo "已移除 Terminux wrapper symlink：${link##*/}"
+                    break
+                fi
+            done
+        done
+    fi
+    for pair in 'hooks/bash_env:terminux-bash-env-hook' \
+                'hooks/bash_rcfile:terminux-bash-rcfile'; do
+        hook="$HOME/.terminux/${pair%%:*}"
+        source_hook="$SCRIPT_DIR/${pair#*:}"
+        if [[ -L "$hook" ]]; then
+            if [[ "$(readlink -m -- "$hook")" == "$(readlink -m -- "$source_hook")" ]]; then
+                unlink -- "$hook"
+                echo "已移除 Terminux hook symlink：${hook##*/}"
+            fi
+        elif [[ -f "$hook" ]] && cmp -s -- "$hook" "$source_hook"; then
+            unlink -- "$hook"
+            echo "已移除 Terminux hook：${hook##*/}"
+        fi
+    done
+    echo "移除完成；保留 wrapper 核心檔、其他檔案與 shell rc 設定。"
+    exit 0
+elif [[ "$#" != 0 ]]; then
+    echo "用法：terminux-setup-wrappers [--remove]" >&2
+    exit 2
+fi
+
+TERMINUX_VENV_PYTHON="${TERMINUX_VENV_PYTHON:-$(command -v python3)}"
+
+if [[ "$TERMINUX_VENV_PYTHON" != /* ||
+      "$TERMINUX_VENV_PYTHON" == *[[:space:]]* ||
+      ! -x "$TERMINUX_VENV_PYTHON" ]]; then
+    echo "FATAL: TERMINUX_VENV_PYTHON must be an absolute executable path without whitespace" >&2
+    exit 1
+fi
+
+mkdir -p "$INSTALL_DIR" "$HOOKS_DIR"
+python_path_tmp="$(mktemp "$HOOKS_DIR/.python_interpreter.XXXXXXXX")"
+printf '%s\n' "$TERMINUX_VENV_PYTHON" > "$python_path_tmp"
+chmod 600 "$python_path_tmp"
+mv -f -- "$python_path_tmp" "$HOOKS_DIR/python_interpreter"
+
+# 1. 安裝 / 更新核心檔
+cp "$SCRIPT_DIR/terminux-wrapper-lib.sh" "$INSTALL_DIR/_wrapper_lib.sh"
+chmod +x "$INSTALL_DIR/_wrapper_lib.sh"
+cp "$SCRIPT_DIR/terminux-wrapper-entry" "$INSTALL_DIR/_terminux_wrapper"
+chmod +x "$INSTALL_DIR/_terminux_wrapper"
+cp "$SCRIPT_DIR/terminux-queue-submit-wrapper" "$INSTALL_DIR/_queue_submit_wrapper"
+chmod +x "$INSTALL_DIR/_queue_submit_wrapper"
+# terminux-notify 以 setup 的 Python 啟動，避免 shell PATH 選到其他環境。
+notify_tmp="$(mktemp "$INSTALL_DIR/.terminux-notify.XXXXXXXX")"
+{
+    printf '#!%s\n' "$TERMINUX_VENV_PYTHON"
+    tail -n +2 "$SCRIPT_DIR/terminux-notify"
+} > "$notify_tmp"
+chmod 750 "$notify_tmp"
+mv -f -- "$notify_tmp" "$INSTALL_DIR/terminux-notify"
+
+# 1b. 安裝 BASH_ENV hook（C++ BASH_ENV 注入指向此檔）
+cp "$SCRIPT_DIR/terminux-bash-env-hook" "$HOOKS_DIR/bash_env"
+chmod +x "$HOOKS_DIR/bash_env"
+echo "Installed BASH_ENV hook: $HOOKS_DIR/bash_env"
+cp "$SCRIPT_DIR/terminux-bash-rcfile" "$HOOKS_DIR/bash_rcfile"
+
+cp "$SCRIPT_DIR/terminux-shell-hooks.bash" "$HOME/.terminux/bash_hooks.sh"
+cp "$SCRIPT_DIR/terminux-shell-hooks.csh" "$HOME/.terminux/tcsh_hooks.csh"
+cp "$SCRIPT_DIR/terminux-tcsh-postcmd" "$INSTALL_DIR/terminux-tcsh-postcmd"
+chmod +x "$INSTALL_DIR/terminux-tcsh-postcmd"
+
+# 2. 為每個 EDA tool 建立 symlink（symlink 用相對路徑，因目標在同目錄）
+#
+# EDA tool 清單來源改為 Canonical EDA Tool Catalog（knowledge/
+# canonical_eda_tool_catalog.yaml），透過官方 loader CLI 讀取，不在本 script
+# 內另外硬編或複製一份清單——避免與 tool_signatures.yaml／package manifest／
+# orchestration 端各自維護的 tool identity 產生 drift。Catalog malformed／載入失敗時
+# CLI 回傳非 0 exit code，本 script 視為 fatal error 直接中止，不 fallback
+# 到任何 hidden hardcoded list。
+# `--include-user` 附加本帳號以 terminux-tool 登記的工具（同一份 effective catalog）；
+# 使用者 overlay 有問題只會略過使用者項目並在 stderr 說明，不影響內建清單。
+created=0
+existing=0
+skipped=0
+
+eda_tool_list="$("$TERMINUX_VENV_PYTHON" -m terminux_engine.tool_identity --list-executables --include-user)" || {
+    echo "FATAL: failed to load canonical EDA tool catalog via terminux_engine.tool_identity" >&2
+    exit 1
+}
+
+while IFS= read -r tool || [[ -n "$tool" ]]; do
+    [[ -z "$tool" ]] && continue
+
+    target="$INSTALL_DIR/$tool"
+    if [[ -L "$target" ]]; then
+        link_target="$(readlink "$target")"
+        if [[ "$link_target" == "_terminux_wrapper" ]]; then
+            existing=$((existing + 1))
+            continue
+        fi
+        echo "WARNING: $target -> $link_target (expected _terminux_wrapper); skipping" >&2
+        skipped=$((skipped + 1))
+        continue
+    fi
+    if [[ -e "$target" ]]; then
+        echo "WARNING: $target exists and is not a symlink; skipping" >&2
+        skipped=$((skipped + 1))
+        continue
+    fi
+
+    ln -s _terminux_wrapper "$target"
+    echo "Created wrapper: $tool -> _terminux_wrapper"
+    created=$((created + 1))
+done <<< "$eda_tool_list"
+
+# 2b. Queue monitoring 指令（squeue/scancel/bjobs/bkill/qstat/qdel）——同樣走
+# _terminux_wrapper（非 _queue_submit_wrapper，見下方 3b），但這些不是 EDA
+# executable identity，不進 Canonical EDA Tool Catalog（見 catalog 檔案內
+# 註解），維持獨立清單 wrapped_tools.txt。
+NON_EDA_WRAPPER_TOOLS_FILE="$SCRIPT_DIR/wrapped_tools.txt"
+if [[ -f "$NON_EDA_WRAPPER_TOOLS_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        tool="${line%%#*}"
+        tool="${tool// /}"
+        [[ -z "$tool" ]] && continue
+
+        target="$INSTALL_DIR/$tool"
+        if [[ -L "$target" ]]; then
+            link_target="$(readlink "$target")"
+            if [[ "$link_target" == "_terminux_wrapper" ]]; then
+                existing=$((existing + 1))
+                continue
+            fi
+            echo "WARNING: $target -> $link_target (expected _terminux_wrapper); skipping" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ -e "$target" ]]; then
+            echo "WARNING: $target exists and is not a symlink; skipping" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        ln -s _terminux_wrapper "$target"
+        echo "Created wrapper: $tool -> _terminux_wrapper"
+        created=$((created + 1))
+    done < "$NON_EDA_WRAPPER_TOOLS_FILE"
+fi
+
+# 3a. srun wrapper（獨立檔，不走 queue_tools.txt）
+cp "$SCRIPT_DIR/terminux-srun-wrapper" "$INSTALL_DIR/_srun_wrapper"
+chmod +x "$INSTALL_DIR/_srun_wrapper"
+{
+    target="$INSTALL_DIR/srun"
+    if [[ -L "$target" ]]; then
+        link_target="$(readlink "$target")"
+        if [[ "$link_target" == "_srun_wrapper" ]]; then
+            existing=$((existing + 1))
+        else
+            echo "WARNING: $target -> $link_target (expected _srun_wrapper); skipping" >&2
+            skipped=$((skipped + 1))
+        fi
+    elif [[ -e "$target" ]]; then
+        echo "WARNING: $target exists and is not a symlink; skipping" >&2
+        skipped=$((skipped + 1))
+    else
+        ln -s _srun_wrapper "$target"
+        echo "Created srun wrapper: srun -> _srun_wrapper"
+        created=$((created + 1))
+    fi
+}
+
+# 3b. Queue submit wrappers — 指向 _queue_submit_wrapper
+if [[ -f "$QUEUE_TOOLS_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        tool="${line%%#*}"
+        tool="${tool// /}"
+        [[ -z "$tool" ]] && continue
+
+        target="$INSTALL_DIR/$tool"
+        if [[ -L "$target" ]]; then
+            link_target="$(readlink "$target")"
+            if [[ "$link_target" == "_queue_submit_wrapper" ]]; then
+                existing=$((existing + 1))
+                continue
+            fi
+            echo "WARNING: $target -> $link_target (expected _queue_submit_wrapper); skipping" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ -e "$target" ]]; then
+            echo "WARNING: $target exists and is not a symlink; skipping" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        ln -s _queue_submit_wrapper "$target"
+        echo "Created queue wrapper: $tool -> _queue_submit_wrapper"
+        created=$((created + 1))
+    done < "$QUEUE_TOOLS_FILE"
+fi
+
+echo "Setup complete. Installed in $INSTALL_DIR (created=$created existing=$existing skipped=$skipped)"

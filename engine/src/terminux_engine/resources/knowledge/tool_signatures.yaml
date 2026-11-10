@@ -1,0 +1,52 @@
+version: "0.1.0"
+
+tools:
+  - name: dc_shell
+    category: logic_synthesis
+    patterns:
+      - "^dc_shell\\b"
+    known_flags:
+      - "-f"
+
+  - name: rtl_lint
+    category: rtl_lint
+    patterns:
+      - "^rtl_lint\\b"
+    known_flags:
+      - "-f"
+
+  - name: vcs
+    category: rtl_simulation
+    patterns:
+      - "^vcs\\b"
+    known_flags:
+      - "-f"
+
+  - name: cov_merge
+    category: coverage
+    patterns:
+      - "^cov_merge\\b"
+    known_flags:
+      - "-f"
+
+  - name: cdc_check
+    category: cdc_rdc
+    patterns:
+      - "^cdc_check\\b"
+    known_flags:
+      - "-f"
+
+  - name: jasper_formal
+    category: formal_verification
+    patterns:
+      - "^jasper_formal\\b"
+    known_flags:
+      - "-f"
+
+  - name: sta_run
+    category: sta
+    patterns:
+      - "^sta_run\\b"
+    known_flags:
+      - "-corner"
+      - "-mode"

@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+"""terminux-chat — Shell helper for @@ chat query.
+
+`ecc.chat_query` 是 context-required method（見
+`ipc/jsonrpc_server.py::_CONTEXT_REQUIRED_METHODS`），daemon 端要求請求帶有效
+`terminux_context.session_id`。本 script 在送出 chat_query 前，先對 Core
+socket（預設 `<home>/.terminux/run/<nodename>/terminux.sock`；`$TERMINUX_CORE_SOCK`
+只是明確的隔離部署覆寫，沒有 `/tmp` fallback）做一次真正的
+`session.init`，並在整個 chat request 期間持續持有那條連線——`session.init`
+核發的 session id 有效期綁定該連線的生命週期，連線一旦關閉 daemon 端會立即
+撤銷該 session（見 `ipc/server.py::_handle_connection` 的 finally block）。
+
+取得 session id 後，另外連線 lineage socket（`$TERMINUX_SOCK`，預設
+`<home>/.terminux/run/<nodename>/lineage.sock`）送 JSON-RPC `ecc.chat_query` request（帶
+`terminux_context.session_id`），印出 AI 回應到 stdout。正常結束、例外、
+Ctrl-C、逾時都會在 finally 關閉 core-socket 連線。
+
+使用 Terminux 的集中 socket 解析，其餘通訊只使用標準函式庫。
+"""
+
+import contextlib
+import getpass
+import json
+import os
+import socket
+import subprocess
+import sys
+import uuid
+from pathlib import Path
+from terminux_engine._client_binary import _find_client_binary
+from terminux_engine.ipc.agent_socket import AgentSocketError, client_agent_socket, client_lineage_socket
+
+TIMEOUT = 120  # 秒
+SESSION_INIT_TIMEOUT = 5  # 秒
+ASK_COUNTER_PATH = os.path.expanduser("~/.terminux/.ask_counter")
+
+
+def _default_core_sock() -> str:
+    """以集中解析取得本帳號、本機的 Core 路徑，明確覆寫優先。"""
+    try:
+        return str(client_agent_socket().path)
+    except AgentSocketError as error:
+        raise SessionError(str(error)) from error
+
+
+def _next_ask_id() -> str:
+    """讀取 file-based counter，遞增後寫回，回傳 Q-NNN。"""
+    counter = 0
+    try:
+        with open(ASK_COUNTER_PATH, "r") as f:
+            counter = int(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        pass
+    counter += 1
+    os.makedirs(os.path.dirname(ASK_COUNTER_PATH), exist_ok=True)
+    with open(ASK_COUNTER_PATH, "w") as f:
+        f.write(str(counter))
+    return f"Q-{counter:03d}"
+
+
+class SessionError(RuntimeError):
+    """session.init 連線失敗、逾時或 daemon 端拒絕。"""
+
+
+def _launch_viewer(request: object, sock_path: str) -> str | None:
+    """以 client 環境與本機 lineage endpoint 啟動 Viewer；失敗回錯誤。"""
+    if not isinstance(request, dict):
+        return None
+    viewer_bin = _find_client_binary("dqe_viewer", "TERMINUX_DQE_VIEWER_BIN",
+                                     excluded=(Path(__file__), Path(sys.argv[0])))
+    if not viewer_bin or not os.path.isfile(viewer_bin) or not os.access(viewer_bin, os.X_OK):
+        return "找不到可執行的 Viewer；可用 TERMINUX_DQE_VIEWER_BIN 指定路徑"
+    db_path = request.get("db")
+    temporary_db_path = request.get("temporary_db_path")
+    if not isinstance(db_path, str) or not isinstance(temporary_db_path, str):
+        return "daemon 回傳的 Viewer 啟動參數不完整"
+    command = [
+        viewer_bin,
+        "--db", db_path,
+        "--temporary-db-path", temporary_db_path,
+        "--ipc-endpoint", sock_path,
+    ]
+    try:
+        subprocess.Popen(command, start_new_session=True)
+    except OSError as error:
+        return f"無法啟動 DQE Viewer：{error}"
+    return None
+
+
+def _project_params() -> dict:
+    """與 `terminux_engine.ipc.project_env` **同一組**規則
+    （script 維持 stdlib-only，因此在此複製）：
+
+    只有 TERMINUX_PROJECT_ID → 用它；只有舊 TERMINUX_PROJECT → 相容採用並提示；
+    兩者非空且不同 → 明確報錯；都沒有 → **不送** project_id（session 未宣告
+    project，之後可採用 Profile 的 project）。不再有 "default" fallback。
+    """
+    primary = (os.environ.get("TERMINUX_PROJECT_ID") or "").strip()
+    legacy = (os.environ.get("TERMINUX_PROJECT") or "").strip()
+    if primary and legacy and primary != legacy:
+        raise SessionError(
+            f"TERM_PROJECT_ENV_CONFLICT: TERMINUX_PROJECT_ID={primary!r} and "
+            f"TERMINUX_PROJECT={legacy!r} disagree; unset one of them")
+    value = primary or legacy
+    if not value:
+        return {}
+    if len(value) > 128 or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise SessionError(f"TERM_PROJECT_ENV_INVALID: {value!r} is not a valid project id")
+    if not primary:
+        sys.stderr.write("terminux-chat: TERMINUX_PROJECT is a legacy name; "
+                         "please switch to TERMINUX_PROJECT_ID\n")
+    return {"project_id": value}
+
+
+@contextlib.contextmanager
+def persistent_session():
+    """開啟 core-socket 連線、送出 session.init，並在整個 with scope 內
+    保持該連線存活；離開 scope（正常/例外/Ctrl-C/逾時皆同）時於 finally
+    關閉連線，讓 daemon 端撤銷 session。yield 出 Core 核發的 session_id。
+    """
+    core_sock_path = _default_core_sock()
+    request_id = uuid.uuid4().hex
+    payload = json.dumps({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": "session.init",
+        "params": {
+            "member_id": getpass.getuser(),
+            **_project_params(),
+            "shell": os.environ.get("SHELL", "bash"),
+            "work_directory": os.getcwd(),
+        },
+    }, ensure_ascii=False) + "\n"
+
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        try:
+            connection.settimeout(SESSION_INIT_TIMEOUT)
+            connection.connect(core_sock_path)
+            connection.sendall(payload.encode("utf-8"))
+            data = b""
+            while b"\n" not in data:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        except OSError as e:
+            raise SessionError(f"cannot connect to {core_sock_path}: {e}") from e
+
+        try:
+            response = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise SessionError(f"invalid session.init response: {e}") from e
+        if not isinstance(response, dict) or response.get("id") != request_id:
+            raise SessionError("session.init response id mismatch")
+
+        error = response.get("error")
+        if isinstance(error, dict):
+            raise SessionError(f"session.init error: {error.get('message', error)}")
+
+        result = response.get("result")
+        session_id = result.get("session_id") if isinstance(result, dict) else None
+        if not isinstance(session_id, str) or not session_id:
+            raise SessionError("session.init returned no session_id")
+
+        yield session_id
+    finally:
+        connection.close()
+
+
+def main() -> int:
+    query = " ".join(sys.argv[1:]).strip()
+    if not query:
+        print("Usage: terminux-chat <query>", file=sys.stderr)
+        return 1
+
+    try:
+        sock_path = str(client_lineage_socket().path)
+    except AgentSocketError as error:
+        print(f"terminux-chat: {error}", file=sys.stderr)
+        return 1
+    ask_id = _next_ask_id()
+
+    # 即時確認：寫到 /dev/tty（不受 shell function 的 & 或 redirect 影響）
+    try:
+        with open("/dev/tty", "w") as tty:
+            tty.write(f"[{ask_id}] @@ {query} (received)\n")
+    except OSError:
+        pass  # 不在 tty 環境時靜默
+
+    try:
+        with persistent_session() as session_id:
+            return _send_chat_query(sock_path, query, ask_id, session_id)
+    except SessionError as e:
+        print(f"terminux-chat: {e}", file=sys.stderr)
+        return 1
+
+
+def _send_chat_query(sock_path: str, query: str, ask_id: str, session_id: str) -> int:
+    request = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "ecc.chat_query",
+        "params": {"query": query, "ask_id": ask_id},
+        "terminux_context": {"session_id": session_id},
+    })
+
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(TIMEOUT)
+        sock.connect(sock_path)
+    except (OSError, ConnectionRefusedError) as e:
+        print(f"terminux-chat: cannot connect to {sock_path}: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        # 送出 request（加換行作為訊息分隔符）
+        sock.sendall((request + "\n").encode("utf-8"))
+
+        # 讀取 response（以換行結束）
+        buf = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\n" in buf:
+                break
+
+        if not buf.strip():
+            print("terminux-chat: empty response from daemon", file=sys.stderr)
+            return 1
+
+        resp = json.loads(buf.strip())
+        if "error" in resp:
+            err = resp["error"]
+            msg = err.get("message", str(err))
+            print(f"terminux-chat: error: {msg}", file=sys.stderr)
+            return 1
+
+        result = resp.get("result", {})
+        if not isinstance(result, dict):
+            print("terminux-chat: invalid result from daemon", file=sys.stderr)
+            return 1
+        answer = result.get("answer", "")
+        if answer:
+            print(answer)
+        launch_error = _launch_viewer(result.get("launch_viewer"), sock_path)
+        if launch_error:
+            print(f"terminux-chat: {launch_error}", file=sys.stderr)
+            return 1
+        return 0
+
+    except socket.timeout:
+        print("terminux-chat: timeout waiting for response", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError as e:
+        print(f"terminux-chat: invalid JSON response: {e}", file=sys.stderr)
+        return 1
+    finally:
+        sock.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

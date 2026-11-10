@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
+# Copyright 2026 Liu, Hsien-Ming (Louis Liu)
+# terminux-tcsh-postcmd — tcsh postcmd alias 的 helper。
+#
+# tcsh alias 內語法限制（無 if/then/endif、`& ;` parse quirks）導致直接寫
+# pre_exec + post_exec 序列的 inline alias 容易踩雷（dropped commands、
+# background loop）。改用此 helper 把邏輯外移到 bash，alias 只做 forwarding。
+#
+# 呼叫方式（從 alias）：
+#   terminux-tcsh-postcmd <exit_status> <last_cmd_expanded> <cwd> <shell_pid>
+#
+# 行為：
+#   1. 非空 last_cmd → 送 pre_exec（lineage.pre_exec endpoint，shell_hook 權威）
+#   2. 送 OSC 133;D;<status>（C++ 端清 ring buffer + post_exec 觸發點）
+#   3. 送 post_exec
+#   4. 送 OSC 133;A（pre-prompt marker）
+#
+# 失敗 silent（daemon 不在線就靜默 skip），不阻擋 shell。
+
+set -u
+
+exit_status="${1:-0}"
+last_cmd="${2:-}"
+cwd="${3:-$(pwd)}"
+shell_pid="${4:-$$}"
+
+NOTIFY="$HOME/.terminux/bin/terminux-notify"
+[ -x "$NOTIFY" ] || exit 0
+
+# 注意：**不**從這裡 fire pre_exec。EDA tool 的 pre_exec 由
+# `terminux-wrapper-entry` 主動發送（wrapper 知道權威 tool name + cwd）。
+# 從這裡發 pre_exec 會與 wrapper 重複（兩條 lineage check + 兩次 cache write
+# + C++ NotificationBar 會出兩條同樣 warn）。
+# 非 EDA cmd（cd / ls / !N）不發 pre_exec → daemon 只走 typed path SKIPPED，
+# 沒有 lineage check 也沒副作用。
+
+# 1. OSC 133;D — terminal 必須先收到才能正確切 ring buffer
+printf '\033]133;D;%s\007' "$exit_status"
+
+# 2. post_exec
+trace_flags=()
+[ -n "${TERMINUX_TRACE_ROOT:-}" ] &&
+    trace_flags+=(--trace-root "$TERMINUX_TRACE_ROOT")
+[ -n "${TERMINUX_TRACE_SELF:-}" ] &&
+    trace_flags+=(--trace-self "$TERMINUX_TRACE_SELF")
+[ -n "${TERMINUX_TRACE_PARENT:-}" ] &&
+    trace_flags+=(--trace-parent "$TERMINUX_TRACE_PARENT")
+"$NOTIFY" post_exec "$exit_status" "$cwd" --pid "$shell_pid" \
+    "${trace_flags[@]}" &
+
+# 3. OSC 133;A — pre-prompt
+printf '\033]133;A\007'
+
+# 不 wait — 讓 background 持續完成，shell 直接回到下一個 prompt
+exit 0

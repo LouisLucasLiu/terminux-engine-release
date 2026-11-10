@@ -1,0 +1,18 @@
+package:
+  id: orfs_formal_pair_native_dqe
+  version: 0.1.0
+  api: terminux.package.v1
+
+schema: 1
+
+when:
+  tools:
+    - formal_equivalence
+
+phases:
+  after: after.run
+
+permissions:
+  services:
+    file: read
+    store: write
