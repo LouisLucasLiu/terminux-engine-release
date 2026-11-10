@@ -2,11 +2,439 @@
 
 Terminux Engine
 
-isvn 為獨立發布的產品。
-isvn is an independently released product.
+isvn is an independently released product. / isvn 為獨立發布的產品。
 
+**Language / 語言：** [English](#english) · [繁體中文](#繁體中文)
+
+> The full user documentation (installation guide, user guide, DQE Viewer, LLM and credential setup) will be published
+> on the Terminux documentation site at https://terminux.mtda.dev/ , which is **not online yet**. Until then, this README
+> is the reference.
+>
 > 完整的使用者文件（安裝指南、User Guide、DQE Viewer、LLM 與憑證設定）預定發布在 Terminux
 > 文件網站 https://terminux.mtda.dev/ ，目前**尚未上線**。在那之前，請以本 README 為準。
+
+---
+
+# English
+
+## Installing the Python package
+
+Requires Python 3.12 or later and `uv`. Create a virtual environment in the source root and install:
+
+```bash
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+uv pip install './engine[gemini]'
+```
+
+`[gemini]` is only needed when you use Gemini; `openai_compatible` needs no extra packages, and `llama_cpp`
+needs `[local-llm]`. `[rag]` is for `scripts/terminux-build-rag-index`, which builds the RAG knowledge index.
+`[anthropic]` only serves a retained legacy notification path; 0.1.x ships no plugin that enables it, so
+ordinary use does not need it.
+
+## Building and installing the GUI (including the DQE Viewer)
+
+Requires CMake 3.16 or later, a C++17 compiler, and the **Desktop gcc 64-bit default components** of Qt 6.7 or later.
+Install the GUI into the same prefix as the Python environment:
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/Qt/6.7.3/gcc_64 -DTERMINUX_BUILD_TESTS=OFF
+cmake --build build
+cmake --install build --prefix "$VIRTUAL_ENV"
+```
+
+After installation you have `$VIRTUAL_ENV/bin/terminux` (the GUI) and `$VIRTUAL_ENV/bin/dqe_viewer` (the DQE Viewer),
+together with the Qt runtime and QML modules they need. The Viewer is started **locally** by the GUI or CLI that
+receives a `launch_viewer` response; the daemon never starts it. `TERMINUX_DQE_VIEWER_BIN` is an optional override:
+the GUI defaults to the `dqe_viewer` next to its own executable; `terminux-chat` searches the environment variable,
+`<sys.prefix>/bin/dqe_viewer`, `<sys.prefix>/../bin/dqe_viewer`, then PATH, in that order.
+The response carries `tab`, `db`, `temporary_db_path` and an optional `focus_job_key`; it never carries an executable path.
+
+### Using an external Qt
+
+External-Qt mode neither installs nor bundles Qt. Install the **Desktop gcc 64-bit default components of Qt 6.7 or later**
+yourself; no additional modules are required. The SDK directory must keep the version information in `lib/`, `plugins/`,
+`qml/` and `lib/cmake/Qt6/`; the pre-install check confirms the required QML imports and the xcb/offscreen plugins.
+
+The full list of libraries, QML imports and plugins ships with the Python wheel as
+`terminux_engine/resources/qt_runtime.json`. Install the Python package first, then check Qt:
+
+```bash
+terminux-qt-check --qt-dir /absolute/path/to/Qt/gcc_64
+```
+
+To install from source with an external Qt, configure like this:
+
+```bash
+cmake -S . -B build-external -DCMAKE_PREFIX_PATH=/absolute/path/to/Qt/gcc_64 \
+  -DTERMINUX_EXTERNAL_QT=ON -DTERMINUX_BUILD_TESTS=OFF -DTERMINUX_BUILD_INTERNAL_TARGETS=OFF
+cmake --build build-external --target terminux dqe_viewer
+cmake --install build-external --prefix "$VIRTUAL_ENV"
+ln -s /absolute/path/to/Qt/gcc_64 "$VIRTUAL_ENV/qt"
+terminux-qt-check --qt-dir "$VIRTUAL_ENV/qt" --prefix "$VIRTUAL_ENV"
+```
+
+The installed `bin/terminux` and `bin/dqe_viewer` use a RUNPATH of `$ORIGIN/../qt/lib`; the `qt.conf` next to them
+points to `../qt`, and plugins and QML imports load from its `plugins/` and `qml/`. `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH`
+and `QML2_IMPORT_PATH` are not needed, so this installation never passes Qt search paths to EDA tools started from
+the built-in terminal.
+
+With `--prefix`, the check runs both programs' `--self-check` offscreen; it opens no window and connects to no daemon.
+If xcb lacks system libraries, the check lists the SONAMEs with the known package names for EL9 and Ubuntu 24.04;
+ask your system administrator to install them — the tool never installs anything itself. In a multi-host environment
+the user's Qt directory must have the **same absolute path** on every host, and the check must pass on every host.
+
+## Portable bundle (Linux x86_64)
+
+If you do not want to build, use the `terminux-<version>-linux-x86_64.tar.gz` shipped with the same release.
+The bundle contains Python 3.12, the Terminux Python package and its dependencies, the prebuilt GUI and DQE Viewer,
+and the third-party license texts. Qt is not included: point `--qt-dir` at a Qt 6.7+ Desktop gcc 64-bit SDK you
+installed yourself. It installs into `~/.local/opt/terminux/<version>`, needs no root, modifies no rc files, and
+does not use the network during installation.
+
+Download the bundle and the `SHA256SUMS` of the same release, verify, extract and install:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf terminux-<version>-linux-x86_64.tar.gz
+cd terminux-<version>
+./install.sh --qt-dir /path/to/Qt/6.7.3/gcc_64
+```
+
+Supported distributions, required system libraries, the Qt check, removal and first launch are described in the
+bundle's `README-INSTALL.md` (source: [src/portable/README-INSTALL.md](src/portable/README-INSTALL.md)).
+
+## Configuring the LLM provider and credentials
+
+Credentials live in `~/.terminux/credentials.json`, which must have mode `0600` (any other mode makes the whole file
+ignored):
+
+```bash
+mkdir -p ~/.terminux
+cat > ~/.terminux/credentials.json <<'JSON'
+{"TERMINUX_GEMINI_API_KEY": "your API key"}
+JSON
+chmod 600 ~/.terminux/credentials.json
+```
+
+Supported names are `TERMINUX_GEMINI_API_KEY`, `TERMINUX_OPENAI_API_KEY` and `TERMINUX_OPENAI_BASE_URL`.
+`TERMINUX_CREDENTIALS_FILE` selects another location. Environment variables of the same names still work, but only as
+a compatibility fallback; the credentials file wins.
+
+The backend is selected with `TERMINUX_LLM_BACKEND`; there is no default:
+
+| backend | Purpose |
+| --- | --- |
+| `gemini` | Gemini API |
+| `openai_compatible` | DeepSeek and other OpenAI-compatible services, or a local OpenAI-compatible service (`TERMINUX_OPENAI_BASE_URL`). The Agent (`@@`) uses this path or `gemini` |
+| `llama_cpp` | Loads a GGUF model locally (`TERMINUX_LLM_MODEL_PATH`); basic Q&A only, no Agent capability |
+
+`scripts/terminux-llm-env.sh` and `.csh` are configuration templates: uncomment one backend, then `source` the file.
+Whether a local OpenAI-compatible service can complete the Agent flow depends on the model and the service; this is
+not verified yet.
+
+## Data sent to the LLM provider
+
+When `TERMINUX_LLM_BACKEND`, `TERMINUX_EMBEDDING_BACKEND` and `~/.terminux/llm_router.yaml` are all absent,
+Terminux sends nothing to any LLM provider. Once configured, the features below send data to the selected provider.
+`gemini` and `openai_compatible` (for example DeepSeek) are cloud services; `llama_cpp` and a local OpenAI-compatible
+service stay on your machine. If design scripts, paths, design names and timing results are confidential, check the
+provider's data-processing terms first, or use a local provider only.
+
+| Feature | When it sends | What it sends |
+| --- | --- | --- |
+| AI Q&A and the `@@` Agent | When you ask | The question and the conversation history; the current session state (stage, corner, block, gate results, WNS, and the most recent lineage checks with command and working directory); the work summary and related past Q&A; the state of other terminals. In addition the Agent sends only the execution evidence it looked up: the status and terminal outcome of the queried run, step and tool identifiers, receipt and artifact-manifest identifiers and hashes, DQE results, and the index of reports and lineage (hashes and sizes only, no file contents). Per-stage timing-path data is not sent by default. The Agent never reads file contents and never runs shell commands. In Profile mode (see "Using AI") only the Profile instructions, this window's conversation history, the bound run ids and the evidence looked up are sent |
+| Explanation, comparison and situation assessment of ORFS runs | When you request it through `@@`; situation assessment also runs automatically after a new ORFS run's DQE results are written | Run identity (design, platform, variant), DQE check results and metrics, excerpts of ORFS reports/logs, and the comparison with the baseline |
+| Work summary | When the terminal is used again after being idle for a while, and when the daemon starts and catches up on earlier summaries | EDA tools used in the period, corners, gate results, WNS changes, number of questions and conversation highlights |
+| Conversation condensation | When the conversation history grows too long | The conversation |
+| Block-name inference | After an STA playbook is loaded, when the block cannot be determined before a command runs (tcsh hooks do this for every command) | Command and working directory |
+| Embedding (search index) | In the background; when building the RAG knowledge index | Questions, AI replies, prompt messages, lineage-check messages, conversation highlights and work summaries; the query when searching; knowledge-document contents |
+| Lineage explainer (off by default) | When `TERMINUX_ENABLE_LINEAGE_EXPLAINER_RUNTIME=1` is set and the lineage check before an EDA tool raises a concern | Command, working directory, runfile path, check results and messages about the related files |
+| Runfile parsing fallback (off by default) | When `TERMINUX_ENABLE_INTENT_FALLBACK_RUNTIME=1` is set and the fixed-format parser cannot read the runfile's inputs and outputs | **The complete runfile contents**, command, working directory and runfile path |
+
+- The embedding destination is chosen separately from the provider above: with `TERMINUX_LLM_BACKEND=gemini`, or
+  `openai_compatible` plus a `TERMINUX_GEMINI_API_KEY` in the credentials file, embeddings go to the Gemini embedding
+  API. `TERMINUX_EMBEDDING_BACKEND=noop` turns this off; `local` uses a local model instead (`TERMINUX_EMBEDDING_MODEL_PATH`).
+- Automatic situation assessment, work summaries and conversation condensation have no individual switches; without a
+  configured backend nothing is sent.
+- If `/projusers/<project>/<account>/.terminux/event_store.sqlite` exists and is readable (`<project>` is the name of
+  the directory above HOME), AI Q&A also includes the accounts, blocks, corners and WNS summaries of other members of
+  the same project.
+- When the lineage-graph and execution-DAG HTML pages are opened in a browser, they download a pinned version of Mermaid
+  from jsDelivr and verify it with Subresource Integrity; that download carries no Terminux data.
+
+## Starting Terminux
+
+```bash
+export TERMINUX_LLM_BACKEND=gemini
+terminux-launch
+```
+
+`terminux-launch` starts the daemon locally according to the shared `owner.lock/owner.json`, or starts
+`terminux-relay` when the owner is on another login server, and then starts the GUI. Use `terminux-launch --no-gui`
+for the background service only; `terminux-launch --reset` shows the owner information and, after you type `yes`,
+removes only the lock — it **does not stop a remote daemon**. `TERMINUX_GUI_BIN` is an optional override; when unset,
+the launcher searches `<sys.prefix>/bin/terminux`, `<sys.prefix>/../bin/terminux`, then PATH. On PATH only ELF
+executables are accepted, and the launcher itself and start-up wrappers are skipped to avoid recursion. The daemon and
+the relay use the same Python environment as the launcher. When there is no owner and the launcher starts the daemon,
+it waits up to 30 seconds for the owner to become ready; on timeout it warns that the daemon is not ready and hooks may
+not be deployed, then continues to start the GUI.
+
+Each user has exactly one daemon. The default local Core and lineage sockets are
+`<passwd home>/.terminux/run/<nodename>/terminux.sock` and
+`<passwd home>/.terminux/run/<nodename>/lineage.sock`; the owner metadata is
+`<passwd home>/.terminux/run/owner.lock/owner.json`. `TERMINUX_HOME_DIR` overrides the private base directory,
+`TERMINUX_NODENAME` the host identifier, and `TERMINUX_ADVERTISE_HOST` the TCP host advertised by the owner.
+`TERMINUX_CORE_SOCK`/`TERMINUX_SOCK` overrides pointing at the old default paths are ignored; other explicit overrides
+still apply. The daemon refuses to start with exit code 4 when another owner holds it or an old daemon is detected;
+CLIs that access the databases directly refuse with exit code 5 when the owner is on another host.
+
+### Service logs
+
+The daemon's structured messages go to `~/.terminux/run/<nodename>/daemon.log`, the relay's to `relay.log` in the same
+host directory; both are rotating files with a 10 MiB (10,485,760 bytes) limit and 3 backups (`.1`–`.3`). Paths and
+sockets share one resolver: `TERMINUX_HOME_DIR` overrides the home base and `TERMINUX_NODENAME` the host directory name;
+setting `HOME` alone does not move the service logs.
+
+The daemon opens the file handler only after acquiring `owner.lock`, the relay after acquiring its local single
+instance, and both close it before releasing ownership; messages before ownership go to stderr only, structured messages
+after ownership go to the rotating file only. `terminux-launch` additionally collects the process stdout/stderr into
+`daemon.stdout.log` or `relay.stdout.log`, which show failures that happen before ownership is acquired.
+
+The daemon default level is still ERROR; `TERMINUX_LOG_LEVEL` accepts DEBUG/INFO/WARNING/ERROR/CRITICAL, and an unset
+or invalid value means ERROR. The relay stays at INFO. A normal start and stop produces no messages at the default daemon
+level, so an empty log does not mean logging is broken. `TERM_LEGACY_SOCKET_OVERRIDE_IGNORED` is a WARNING and only
+appears at WARNING or more verbose; a running relay logs `TERM_DAEMON_OWNER_UNAVAILABLE` at INFO when the owner
+connection or read fails. The launcher prints the same error codes to stderr only before ownership is acquired.
+
+A multi-login-server deployment needs a shared HOME, the Python environment and the GUI executable at the same path on
+every host, and the owner's two TCP ports reachable from the other login servers. The TCP bridge authenticates with a
+token and is **not encrypted**; restrict the reachable network segment. Ordinary AI Q&A needs a working LLM provider;
+the STA playbook is optional.
+
+- Verification status: **RELEASE_QUALIFIED_SIMULATED_MULTI_HOST**. Verified on a single host and in a simulated
+  multi-host environment (two VMs, NFSv4.2); not verified on a production site.
+- Not verified: production-site networking, NFSv3, clock skew, mixed operating systems, real EDA tools, compute nodes,
+  long NFS stalls.
+- Known limitations:
+  - after the owner moves to another host, the GUI on the original host must run `terminux-launch --no-gui` once more to reconnect;
+  - several GUIs show the same notification's action at the same time, and repeated clicks execute it repeatedly;
+  - when the GUI is disconnected for too long, notifications beyond the 500-entry buffer are lost;
+  - the connection is not encrypted and is only suitable for trusted network segments.
+
+To enable STA stage tracking, quality gates and nudges, deploy the template from the installed package (it ships inside
+the package, at `templates/sta_signoff_playbook.yaml` of `terminux_engine.ecc`):
+
+```bash
+mkdir -p ~/.terminux/ecc
+python3 -c "from importlib.resources import files; import shutil, pathlib; shutil.copy(files('terminux_engine.ecc') / 'templates' / 'sta_signoff_playbook.yaml', pathlib.Path.home() / '.terminux' / 'ecc')"
+```
+
+A running daemon must be restarted to load it. `TERMINUX_PLAYBOOK_PATH` selects another template location. Neither the
+package installation nor the daemon's wrapper auto-setup deploys the playbook.
+
+## Shell hooks (terminal integration)
+
+When the daemon starts it installs and updates the Bash/tcsh hooks, the postcmd helper and
+`~/.terminux/hooks/bash_rcfile`, without modifying any user rc file.
+
+When the built-in terminal of the GUI uses bash, it loads the deployed rcfile with `--rcfile`: it sources `~/.bashrc`
+first, then `~/.terminux/bash_hooks.sh`, so **no rc change is needed**. If `.bashrc` already sources the hook, it is
+registered only once. Before each interactive prompt the wrapper directory is de-duplicated and moved back to the front
+of PATH.
+
+External bash terminals are not integrated automatically; to enable them, source the hook yourself or add this line to
+your own `.bashrc`:
+
+```bash
+[ -f ~/.terminux/bash_hooks.sh ] && source ~/.terminux/bash_hooks.sh
+```
+
+tcsh still needs a manual step: **add the line to `~/.tcshrc` if it exists, otherwise to `~/.cshrc`**:
+
+```tcsh
+if ( $?TERMINUX_ACTIVE ) source ~/.terminux/tcsh_hooks.csh
+```
+
+`TERMINUX_ACTIVE=1` is injected by the GUI, so the line loads the hook only inside Terminux's built-in terminal and
+leaves ordinary external terminals alone. An external terminal can set the variable explicitly and source the file.
+When csh/tcsh sends no OSC 133 hook marker within 10 seconds of starting, the GUI shows a one-time setup hint; it never
+modifies rc files. Classic csh uses `.cshrc` and has no tcsh-style automatic postcmd/precmd; on some systems csh is an
+alias of tcsh.
+
+- The hooks notify the daemon through `~/.terminux/bin/terminux-notify`, installed by the wrapper setup when the daemon
+  starts; with `TERMINUX_AUTO_SETUP_WRAPPERS=0` it is not installed and the hooks send nothing.
+- When a command finishes, the hooks send its exit status, working directory and shell PID; the GUI additionally hands the
+  command and the most recent terminal output to the local daemon. The tcsh version also sends the expanded command line
+  and puts `~/.terminux/bin` at the front of PATH before every prompt.
+- For an EDA command that finishes successfully with `-f <runfile>`, the daemon records the inputs and outputs declared by
+  the runfile in `~/.terminux/lineage/ledger.jsonl`. The daemon only reads those files; it never creates or modifies them.
+- The wrapper also writes a per-host `~/.terminux/lineage.<nodename>.jsonl`; the daemon reads every host's file and the
+  legacy `lineage.jsonl`.
+
+## Running ORFS from the terminal (`terminux-orfs-run`)
+
+ORFS runs directly on the host under your own account: the CAD/IT administrator installs ORFS and the EDA tools, and you
+only need an output directory you can write to. No Docker, container, sudo or root is needed, and no write access to the
+ORFS installation.
+
+```bash
+terminux-orfs-run --orfs-repo-root /path/to/OpenROAD-flow-scripts \
+  --work-home ~/orfs-runs/my-run --design gcd --platform nangate45 --variant my-run \
+  --design-config ./designs/nangate45/gcd/config.mk \
+  --ledger-db ~/orfs-runs/my-run-ledger.sqlite --receipt-out ~/orfs-runs/my-run-receipt.json
+```
+
+- `--work-home` is this run's output directory (ORFS `WORK_HOME`) and must be owned by you.
+- The tool environment comes from `--env-script` (default `<orfs-repo-root>/env.sh`); apart from `HOME`, `LANG` and
+  `PATH`, Terminux does not inherit your shell environment. `--make-executable`, `--openroad-exe` and `--yosys-exe`
+  accept absolute paths when needed.
+- The last ORFS step needs KLayout. `klayout` must be on `PATH` when `terminux-orfs-run` runs, or be added to `PATH` by
+  `--env-script`; otherwise the flow stops at ORFS's `check-klayout` with exit code 1, and the outputs and DQE records of
+  the earlier stages are kept.
+- `--design-config` is relative to the ORFS `flow/` directory; the config must live under `flow/` and cannot point
+  elsewhere. Without write access to the ORFS installation you can bring your own `--env-script`: `source` the original
+  `env.sh`, then `export` the variables the config defines with `?=` (for example `CORE_UTILIZATION`). The env script's
+  content hash is recorded in the receipt.
+- `--ledger-db` must be a path dedicated to this run; it must not be the daemon's
+  `~/.terminux/orchestration/ledger.sqlite` (that path is refused).
+- The result (receipt) is written to the current user's EventStore by default, so the daemon and `@@` can find the run;
+  `--no-receipt` skips it, `--receipt-store` writes to the given EventStore.
+- Exit codes:
+
+  | exit code | Meaning |
+  | --- | --- |
+  | 0 | The run succeeded and the receipt was written |
+  | 1 | The run failed |
+  | 2 | Argument or environment error (including running as root, or `--work-home` not owned by you) |
+  | 3 | The run succeeded but the receipt was not written |
+  | 130/143 | Ctrl-C/SIGTERM received: a `cancelled` receipt is written when the flow's process group is confirmed finished; otherwise no receipt |
+
+## Using AI (`@@`)
+
+At the prompt of the terminal in the Terminux window, type `@@` followed by your question and press Enter. The line is
+not passed to the shell; the answer appears in the Notification Bar at the top of the window. A few seconds after the
+answer arrives the bar collapses to a header line; click the header, or right-click in the terminal and choose
+**Notification Bar ▸ Show**, to read it again. Text after `@@` goes to Terminux: shell variables are not expanded, so
+write full absolute paths. An LLM backend must be configured first (see "Configuring the LLM provider and credentials");
+the Agent is available only with `gemini` and `openai_compatible`.
+
+Another way to ask: select text in the terminal with the mouse and right-click → **Ask AI about this**; the selected
+text is the question. A later `@@` question continues the same conversation.
+
+The AI can only query recorded execution evidence (receipts, artifact manifests, DQE results): it cannot read your
+files, cannot run shell commands, and never approves or performs any action on your behalf. See "Data sent to the LLM
+provider" for what each feature sends.
+
+### Asking about one ORFS run
+
+1. Run the flow with `terminux-orfs-run` (previous section). The receipt written by `--receipt-out` contains the run's
+   `run_id` and `attempt`; the DQE summary at the end of stdout also lists the run id.
+2. Bind the run (requires Profile mode, next section):
+
+   ```
+   @@/bind-run /absolute/path/to/receipt.json
+   ```
+
+   On success the bar shows `RUN_BOUND: run_… attempt 1 is now bound to this session (host_native nangate45/gcd).`.
+   The binding exists only in this Terminux window's session and disappears when the daemon restarts; `@@/unbind-run`
+   removes it.
+3. Ask directly, for example:
+
+   ```
+   @@For the Run I just bound, which DQE checks are WARN or FAIL? Show the run evidence and where I can verify it.
+   @@Based on the evidence from this run, what should I inspect next, and why?
+   ```
+
+   Without Profile mode, putting the run id in the question also lets the AI query the same evidence.
+4. Check the answer yourself: `@@open DQE Viewer` opens the DQE Viewer (handled locally by Terminux; no AI request is
+   sent) — use the "Fail" filter to see each check; `terminux-orfs-report --receipt <receipt> --run-id <run_id> --attempt <attempt>`
+   prints the finish report verified against the receipt and the artifact manifest. The AI sees the DQE summary, not
+   the report itself, so verify timing numbers in the Viewer and the report.
+
+Without a bound run and without a run id in the question, the AI states that it has no evidence to query and gives only
+general information.
+
+### Enabling Profile mode (administrator setup)
+
+Profile mode confines the AI conversation to the scope the administrator defines and enables `/bind-run`; it supports the
+`openai_compatible` backend only. The daemon reads the environment variables below at start-up. Both files must be
+**regular files owned by you with mode 0600**, given as absolute paths; anything invalid makes the whole file void and AI
+requests are refused — there is no fallback to the unrestricted mode.
+
+| Environment variable | Content |
+| --- | --- |
+| `TERMINUX_AGENT_TASK_PROFILE_FILE` | Profile (JSON): the tools the AI may use, the conversation content it may include, the allowed runs, and the `/bind-run` rules |
+| `TERMINUX_OUTBOUND_PAYLOAD_POLICY_FILE` | Outbound policy (JSON): the allowed provider endpoint and model, the data classes that may leave, and their limits |
+| `TERMINUX_EGRESS_AUDIT_DIGEST` | Digest mode of the egress audit: `plain_sha`, `keyed_ephemeral` or `keyed_persisted` (the last also needs `TERMINUX_EGRESS_AUDIT_KEYRING_FILE`). Required when the policy uses `structural_c2` |
+
+Example Profile (evidence queries only; binding host-native nangate45/gcd runs is allowed):
+
+```json
+{
+  "profile_id": "gcd-evidence",
+  "tools": ["query_orchestration_evidence"],
+  "context_sections": ["conversation_history"],
+  "allowed_runs": {},
+  "run_binding": {
+    "max_runs_per_session": 2,
+    "require_runner": "host_native",
+    "allowed_designs": ["nangate45/gcd"],
+    "max_age_sec": 604800
+  }
+}
+```
+
+- `tools` currently accepts only `query_orchestration_evidence`; `context_sections` only `conversation_history`.
+- `allowed_runs` pre-approves run ids and attempts; it is usually left empty, and `run_binding` lets users bind runs themselves.
+- All four `run_binding` keys are required: the maximum number of bindings per session (1–8), the receipt's runner
+  (`terminux-orfs-run` is `host_native`), the allowed `<platform>/<design>`, and the receipt's maximum age in seconds.
+  The receipt must be your own official record in the EventStore, and the file's hash must match that record.
+
+Example outbound policy (v2, structural mode; DeepSeek `deepseek-chat`):
+
+```json
+{
+  "policy_version": "terminux.egress_policy.v2",
+  "approval_mode": "structural_c2",
+  "endpoint": "https://api.deepseek.com/v1/chat/completions",
+  "model": "deepseek-chat",
+  "allowed_payload_sha256": [],
+  "approved_data_classes": ["system_instructions", "learner_text", "conversation_history",
+                            "tool_schema", "tool_call", "evidence_bundle", "model_output",
+                            "budget_summary"],
+  "limits": {"learner_text_max_chars": 4000, "history_max_turns": 20, "history_max_chars": 60000,
+             "model_output_max_chars": 60000, "requests_per_turn": 4},
+  "non_agent_egress": "deny"
+}
+```
+
+- `endpoint` must equal the provider's `<TERMINUX_OPENAI_BASE_URL>/v1/chat/completions` and `model` must equal
+  `TERMINUX_OPENAI_MODEL`; on a mismatch every request is refused.
+- `approved_data_classes` lists the data classes allowed to leave; `timing_path_evidence` (per-stage timing-path data)
+  is not sent unless listed. All five `limits` keys are required, and an out-of-range value voids the whole file.
+- `allowed_payload_sha256` must be empty in `structural_c2` mode; `exact_digest` mode releases only the request payloads
+  on the list.
+- Every egress decision is recorded in `~/.terminux/run/<nodename>/egress_audit/<date>.jsonl` (metadata and hashes
+  only, no contents).
+
+In Profile mode the AI system prompt contains only the Profile instructions, this window's conversation history and the
+bound run ids; the session state, work summary and other terminals' state listed in "Data sent to the LLM provider" are
+not sent.
+
+## License
+
+This project is licensed under the PolyForm Shield License 1.0.0. See the [LICENSE.md](LICENSE.md) file for full details.
+For third-party software licenses and notices, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+- **Permitted Use**: Any organization (including design service companies and semiconductor design houses) may use this software free of charge, including for internal business purposes and on customer projects.
+- **Noncompete Condition**: You may not use this software to provide any product or service that competes with Terminux.
+- **Source-Available**: This project is source-available software, not open source as defined by the Open Source Initiative (OSI).
+- **Inquiries**: For other licensing inquiries or custom arrangements, please contact louis.cat.work@gmail.com.
+
+---
+
+# 繁體中文
 
 ## 安裝 Python 套件
 
@@ -21,7 +449,7 @@ uv pip install './engine[gemini]'
 `[gemini]` 只在使用 Gemini 時需要；`openai_compatible` 不需要額外套件，`llama_cpp`
 需要 `[local-llm]`。
 `[rag]` 供 `scripts/terminux-build-rag-index` 建立 RAG 知識索引。`[anthropic]` 只給保留中的舊版
-Layer 2 通知路徑使用；0.1.0 沒有啟用這條路徑的 plugin，一般使用不需要安裝。
+Layer 2 通知路徑使用；0.1.x 沒有啟用這條路徑的 plugin，一般使用不需要安裝。
 
 ## 建置與安裝 GUI（含 DQE Viewer）
 
@@ -395,16 +823,6 @@ Profile 範例（只允許查詢執行證據，允許綁定 nangate45／gcd 的 
 
 Profile 模式下，AI 的 system prompt 只有 Profile 的指示、這個視窗的對話紀錄與已綁定的 run id；
 「送往 LLM provider 的資料」表中 session 狀態、工作摘要、其他 terminal 的狀態都不會送出。
-
-## License
-
-This project is licensed under the PolyForm Shield License 1.0.0. See the [LICENSE.md](LICENSE.md) file for full details.
-For third-party software licenses and notices, see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-- **Permitted Use**: Any organization (including design service companies and semiconductor design houses) may use this software free of charge, including for internal business purposes and on customer projects.
-- **Noncompete Condition**: You may not use this software to provide any product or service that competes with Terminux.
-- **Source-Available**: This project is source-available software, not open source as defined by the Open Source Initiative (OSI).
-- **Inquiries**: For other licensing inquiries or custom arrangements, please contact louis.cat.work@gmail.com.
 
 ## 授權條款
 

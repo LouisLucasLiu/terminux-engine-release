@@ -1,3 +1,3 @@
 # SPDX-License-Identifier: LicenseRef-PolyForm-Shield-1.0.0
 # Copyright 2026 Liu, Hsien-Ming (Louis Liu)
-__version__ = "0.1.0"
+__version__ = "0.1.1"

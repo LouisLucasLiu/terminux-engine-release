@@ -1,4 +1,121 @@
-# Download
+# Terminux portable bundle — installation / 可攜式安裝包安裝說明
+
+[English](#english) · [繁體中文](#繁體中文)
+
+## English
+
+### Download
+
+Download `terminux-<version>-linux-x86_64.tar.gz` and the `SHA256SUMS` of the same release, then in the download directory:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf terminux-<version>-linux-x86_64.tar.gz
+cd terminux-<version>
+```
+
+Supported: x86_64 Ubuntu 24.04, RHEL/Rocky/AlmaLinux 9, CentOS Stream 9.
+Requires glibc 2.34 or later, a system libstdc++ that provides `GLIBCXX_3.4.29`, and enough space to extract and install.
+No root is needed. Python 3.12 and the basic Python dependencies are included; installation does not use the network.
+Qt is not included: install the **Desktop gcc 64-bit default components of Qt 6.7 or later** yourself and make sure that
+SDK is compatible with the host OS. The SDK must contain the libraries, the QML imports, and the xcb and offscreen
+platform plugins.
+
+Ask your system administrator for the X11/xcb and graphics system libraries; common packages are listed below.
+The installer's `terminux-qt-check` reports the exact missing SONAMEs and never installs anything itself.
+
+| Purpose | EL9 | Ubuntu 24.04 |
+| --- | --- | --- |
+| xcb cursor | `xcb-util-cursor` | `libxcb-cursor0` |
+| xcb utility / image / keysyms / renderutil / wm | `xcb-util`, `xcb-util-image`, `xcb-util-keysyms`, `xcb-util-renderutil`, `xcb-util-wm` | `libxcb-util1`, `libxcb-image0`, `libxcb-keysyms1`, `libxcb-render-util0`, `libxcb-icccm4` |
+| XKB | `libxkbcommon`, `libxkbcommon-x11` | `libxkbcommon0`, `libxkbcommon-x11-0` |
+| X11 / xcb | `libX11`, `libX11-xcb`, `libxcb` | `libx11-6`, `libx11-xcb1`, `libxcb1` |
+
+Package names follow the [Red Hat package manifest](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/package_manifest/)
+and the [Ubuntu package data](https://packages.ubuntu.com/noble/libxcb-cursor0); for any other missing library, the checker's output is authoritative.
+
+### Install
+
+First stop any Terminux daemon running under this account; if the owner of a shared HOME is on another host, stop it
+there first. Use Ctrl+C in the terminal that started it, or your usual service manager — the installer never kills a daemon.
+
+```bash
+./install.sh --qt-dir /your/Qt/6.7.3/gcc_64
+```
+
+Confirm at the prompt, or add `--yes`. The default location is `~/.local/opt/terminux/<version>`; the installer creates a
+`qt` symlink and switches `current` only after the Qt check passes. When `current/qt` already exists, `--qt-dir` may be
+omitted; an upgrade keeps the previous version. Installing the same version again stops unless you add `--reinstall`.
+On failure the new `.partial` directory is removed and `current` is not switched.
+`--prefix <path>` changes the location; `--no-bin-link` skips the two entries in `~/.local/bin`.
+`--force` only bypasses the unsupported-OS block; it cannot bypass the architecture, ABI, Qt or active-daemon checks.
+
+To check again later:
+
+```bash
+~/.local/bin/terminux-qt-check --qt-dir ~/.local/opt/terminux/current/qt --prefix ~/.local/opt/terminux/current
+```
+
+To remove one version or all of them:
+
+```bash
+~/.local/opt/terminux/current/uninstall.sh --version <version>
+~/.local/opt/terminux/current/uninstall.sh --all
+```
+
+Data, settings and logs under `~/.terminux` are kept by default. `--purge-data` deletes them, and even with `--yes` you
+must type the full data path to confirm. The remover deletes wrappers and hooks conservatively; files in `~/.local/bin`
+not created by this installation are never overwritten or deleted. No rc file is modified; after removal, delete unused
+hook lines yourself as the output suggests.
+
+### First Launch
+
+Put `~/.local/bin` on your PATH — bash or tcsh:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+```tcsh
+setenv PATH "$HOME/.local/bin:$PATH"
+```
+
+Start:
+
+```bash
+terminux
+```
+
+The GUI's built-in bash integrates automatically without rc changes; external terminals must opt in themselves.
+For tcsh, add this line to `~/.tcshrc`, or to `~/.cshrc` only if there is no `.tcshrc`:
+
+```tcsh
+if ( $?TERMINUX_ACTIVE ) source ~/.terminux/tcsh_hooks.csh
+```
+
+`TERMINUX_ACTIVE` is set only in the GUI's built-in terminal, so ordinary external shells are unaffected.
+The hooks are deployed by the automatic setup of the first daemon start; if the launcher warns that deployment failed
+or is disabled, check the log as the message suggests.
+
+`~/.local/bin` only contains `terminux` (starts the GUI) and `terminux-qt-check`. The other commands
+(`terminux-orfs-run`, `terminux-orfs-report`, `terminux-launch`, `terminux-daemon`, …) live in
+`~/.local/opt/terminux/current/venv/bin/`; to type them directly in a terminal — including Terminux's built-in
+terminal — add that directory to your PATH yourself.
+
+Configuring an LLM provider is optional. Without a provider no LLM request is sent; see the section "Configuring the LLM
+provider and credentials" in the main README shipped with the product. This bundle contains only the basic dependencies;
+the Gemini, Anthropic, local-llm and RAG extras are not included. Prepare those packages separately before using a
+provider that needs them.
+
+Known limits: a working graphical session is required to open the GUI; a passing offscreen self-check does not mean a
+remote display is configured. In a multi-host environment the Qt directory and the installation path must be identical
+on every host, and Qt and the system libraries must be available on each host. `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH` and
+`QML2_IMPORT_PATH` are not set; Qt is located through the installation's RUNPATH and `qt.conf`. Compatibility with other
+operating systems, architectures, Qt SDKs or providers must be confirmed separately.
+
+## 繁體中文
+
+## Download
 
 下載 `terminux-<版本>-linux-x86_64.tar.gz` 與同次發布的 `SHA256SUMS`，在下載目錄執行：
 
@@ -27,7 +144,7 @@ Qt 不隨附：請先自行安裝 **Qt 6.7 以上、Qt 6 系列的 Desktop gcc 6
 套件名稱依 [Red Hat 套件清單](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/package_manifest/)
 與 [Ubuntu 套件資料](https://packages.ubuntu.com/noble/libxcb-cursor0)；其他缺庫仍以檢查器輸出為準。
 
-# Install
+## Install
 
 先停止這個帳號正在執行的 Terminux daemon；共享 HOME 的 owner 若在另一台主機，須先到該主機停止。
 使用原啟動終端的 Ctrl+C 或原服務管理方式停止，安裝器不會終止 daemon。
@@ -59,7 +176,7 @@ Qt 不隨附：請先自行安裝 **Qt 6.7 以上、Qt 6 系列的 Desktop gcc 6
 仍須輸入完整資料路徑確認。移除器先保守移除 wrapper／hook；非本安裝建立的 `~/.local/bin` 檔案不會被覆蓋或刪除。
 不會修改任何 rc 檔；移除後請依輸出自行刪除不再使用的 hook 行。
 
-# First Launch
+## First Launch
 
 把 `~/.local/bin` 放進 PATH，bash 與 tcsh 擇一：
 
